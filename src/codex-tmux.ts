@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { baseDirFromImportMeta, ensureDir, nowCompactUtc, nowIso, shellQuote } from './lib/runtime.js';
+import { baseDirFromImportMeta, ensureDir, nowCompactUtc, nowIso, shellQuote, updateCurrentSymlink } from './lib/runtime.js';
 import { commandExists, execCapture } from './lib/proc.js';
 
 type Status = 'ok' | 'warn' | 'fail';
@@ -294,6 +294,14 @@ function main(): number {
     }
     logger.log('preflight', 'ok', 'validated');
 
+    const watchSessionDir = path.join(BASE_DIR, 'sessions', `tmux__${options.session}`);
+    ensureDir(watchSessionDir);
+    fs.closeSync(fs.openSync(path.join(watchSessionDir, 'commands.log'), 'a'));
+    fs.closeSync(fs.openSync(path.join(watchSessionDir, 'output.log'), 'a'));
+    fs.closeSync(fs.openSync(path.join(watchSessionDir, 'events.jsonl'), 'a'));
+    updateCurrentSymlink(BASE_DIR, watchSessionDir);
+    logger.log('watch_logs', 'ok', 'session_dir_ready', `dir=${watchSessionDir}`);
+
     const watchAudit = logger.getWatchAuditFile();
     const watchProgram = `${shellQuote(process.execPath)} ${shellQuote(path.join(BASE_DIR, 'dist', 'codex-live-watch.js'))} current`;
     const watchCmd = options.logEnabled
@@ -319,6 +327,17 @@ function main(): number {
 
     spawnSync('tmux', ['set-option', '-t', options.session, '-gq', '@codex_watch_cmd', watchCmd], { stdio: 'ignore' });
     logger.log('session', 'ok', 'watch_cmd_set', `watch_audit_file=${watchAudit}`);
+
+    const panes = tmux(['list-panes', '-t', options.session, '-F', '#{pane_id}']);
+    const mainPaneId = panes.out.split(/\r?\n/).find((x) => x.trim().length > 0) ?? '';
+    if (mainPaneId) {
+      const outputLog = path.join(watchSessionDir, 'output.log');
+      const pipeCmd = `cat >> ${shellQuote(outputLog)}`;
+      spawnSync('tmux', ['pipe-pane', '-o', '-t', mainPaneId, pipeCmd], { stdio: 'ignore' });
+      logger.log('watch_logs', 'ok', 'pipe_pane_enabled', `pane=${mainPaneId};output_log=${outputLog}`);
+    } else {
+      logger.log('watch_logs', 'warn', 'pipe_pane_skipped', 'reason=main_pane_not_found');
+    }
 
     if (options.doAttach) {
       if (options.autoPopup) {
