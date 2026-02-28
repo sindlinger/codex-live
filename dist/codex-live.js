@@ -4,12 +4,12 @@ import path from 'node:path';
 import { baseDirFromImportMeta } from './lib/runtime.js';
 import { loadConfig, saveConfig, resolveRepo } from './lib/config.js';
 import { resolveSessionId, formatSessions } from './lib/sessions.js';
-import { runProcess } from './lib/proc.js';
+import { commandExists, runProcess } from './lib/proc.js';
 import { stage, ok, fail, file, dim } from './lib/colors.js';
 const BASE_DIR = baseDirFromImportMeta(import.meta.url);
 const BIN_DIR = path.join(BASE_DIR, 'bin');
 function usage() {
-    console.log(`${stage('codex-live')} ${dim('(Node+TS CLI)')}\n\n${stage('Comandos:')}\n  codex-live repos list\n  codex-live repos add <nome> <path>\n  codex-live repos use <nome|path>\n  codex-live repos remove <nome>\n\n  codex-live sessions list\n\n  codex-live run [--repo <nome|path>] [--session-id <id>|--session-number <n>] -- <comando> [args]\n  codex-live pipeline [--repo <nome|path>] [--session-id <id>|--session-number <n>] [--range <1-12>] [--model <alias>] [--input <alias>] [--probe] [--param <arg>]...\n\n  codex-live watch [--session-id <id>|--session-number <n>]\n  codex-live open-watch [--session-id <id>|--session-number <n>]\n  codex-live popup [--session-id <id>|--session-number <n>] [--width <92%>] [--height <85%>]\n\n${stage('Exemplos:')}\n  codex-live pipeline --repo operpdf --range 1-12 --model @M-DESP --input :Q22 --probe\n  codex-live run --repo /mnt/c/git/operpdf-textopsalign -- ./run.exe 1-12 --inputs @M-DESP --inputs :Q22 --probe\n  codex-live popup --session-number 1 --width 70% --height 55%\n  codex-live sessions list`);
+    console.log(`${stage('codex-live')} ${dim('(Node+TS CLI)')}\n\n${stage('Comandos:')}\n  codex-live repos list\n  codex-live repos add <nome> <path>\n  codex-live repos use <nome|path>\n  codex-live repos remove <nome>\n\n  codex-live sessions list\n\n  codex-live run [--repo <nome|path>] [--session-id <id>|--session-number <n>] -- <comando> [args]\n  codex-live pipeline [--repo <nome|path>] [--session-id <id>|--session-number <n>] [--range <1-12>] [--model <alias>] [--input <alias>] [--probe] [--param <arg>]...\n  codex-live codex [--repo <nome|path>] [--session-id <id>|--session-number <n>] [--help-original] [-- <args do codex>]\n\n  codex-live watch [--session-id <id>|--session-number <n>]\n  codex-live open-watch [--session-id <id>|--session-number <n>]\n  codex-live popup [--session-id <id>|--session-number <n>] [--width <92%>] [--height <85%>]\n\n${stage('Exemplos:')}\n  codex-live pipeline --repo operpdf --range 1-12 --model @M-DESP --input :Q22 --probe\n  codex-live run --repo /mnt/c/git/operpdf-textopsalign -- ./run.exe 1-12 --inputs @M-DESP --inputs :Q22 --probe\n  codex-live codex --help-original\n  codex-live codex -- --model gpt-5\n  codex-live popup --session-number 1 --width 70% --height 55%\n  codex-live sessions list`);
 }
 function parseOpts(args) {
     const opts = { params: [] };
@@ -190,6 +190,37 @@ async function cmdWatch(args, mode) {
     console.log(stage(`Abrindo ${mode}:`), `session=${file(sessionId)}`);
     return runProcess(bin, callArgs);
 }
+async function cmdCodex(args) {
+    const { opts, rest } = parseOpts(args);
+    const showSubHelp = opts.help;
+    const showOriginalHelp = rest.includes('--help-original');
+    const passthrough = rest.filter((x) => x !== '--help-original');
+    if (showSubHelp) {
+        console.log('uso: codex-live codex [--repo <nome|path>] [--session-id <id>|--session-number <n>] [--help-original] [-- <args do codex>]');
+        console.log('exemplos:');
+        console.log('  codex-live codex --help-original');
+        console.log('  codex-live codex -- --model gpt-5');
+        return 0;
+    }
+    if (!commandExists('codex')) {
+        throw new Error('comando `codex` não encontrado no PATH');
+    }
+    const cfg = loadConfig(BASE_DIR);
+    const repo = resolveRepo(BASE_DIR, cfg, opts.repo);
+    const sessionId = resolveSessionId(BASE_DIR, opts);
+    const bin = ensureBin('codex-live-run');
+    const codexArgs = showOriginalHelp
+        ? ['--help']
+        : passthrough;
+    const callArgs = [];
+    if (sessionId && sessionId !== 'current')
+        callArgs.push('--session', sessionId);
+    callArgs.push('--repo', repo, '--', 'codex', ...codexArgs);
+    const desc = showOriginalHelp ? '--help' : (codexArgs.length > 0 ? codexArgs.join(' ') : '(sem args)');
+    console.log(stage('Executando Codex original via codex-live:'));
+    console.log(`  repo=${file(repo)} session=${file(sessionId)} codex_args=${dim(desc)}`);
+    return runProcess(bin, callArgs);
+}
 async function main() {
     const [cmdName, ...args] = process.argv.slice(2);
     if (!cmdName || cmdName === '--help' || cmdName === '-h' || cmdName === 'help') {
@@ -202,6 +233,7 @@ async function main() {
             case 'sessions': return cmdSessions();
             case 'run': return cmdRun(args);
             case 'pipeline': return cmdPipeline(args);
+            case 'codex': return cmdCodex(args);
             case 'watch': return cmdWatch(args, 'watch');
             case 'open-watch': return cmdWatch(args, 'open-watch');
             case 'popup': return cmdWatch(args, 'popup');
