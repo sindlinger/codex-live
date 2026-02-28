@@ -305,7 +305,9 @@ async function cmdFlow(args) {
 }
 async function cmdMonitor(action, args) {
     const { opts, rest } = parseOpts(args);
-    const sessionArg = rest[0];
+    const hasPositionalSession = Boolean(rest[0]) && !rest[0].startsWith('-');
+    const sessionArg = hasPositionalSession ? rest[0] : undefined;
+    const tailArgs = hasPositionalSession ? rest.slice(1) : rest;
     const cfg = loadConfig(BASE_DIR);
     const resolvedOpts = { ...opts };
     if (sessionArg && !resolvedOpts.session && !resolvedOpts.sessionId && !resolvedOpts.sessionNumber) {
@@ -329,6 +331,8 @@ async function cmdMonitor(action, args) {
             callArgs.push('--width', opts.width);
         if (opts.height)
             callArgs.push('--height', opts.height);
+        // Forward advanced tmux flags (ex: --no-attach, --no-popup, --log, --log-dir, --log-file)
+        callArgs.push(...tailArgs);
         console.log(stage('UI tmux:'), `session=${file(tmuxSession)} repo=${file(repo)}`);
         return runInternal('codex-tmux.js', callArgs);
     }
