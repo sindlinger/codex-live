@@ -221,6 +221,13 @@ function spawnPopupOnAttach(session, width, height, watchCmd, logger) {
     spawnSync('tmux', ['run-shell', '-b', worker], { stdio: 'ignore' });
     logger.log('popup_fallback', 'ok', 'scheduled', `size=${width}x${height}`);
 }
+function buildPopupHookCommand(session, width, height, watchCmd) {
+    return (`run-shell -b ` +
+        shellQuote(`client_tty=$(tmux list-clients -t ${shellQuote(session)} -F '#{client_tty}' 2>/dev/null | head -n1 || true); ` +
+            `if [ -n "$client_tty" ]; then ` +
+            `tmux display-popup -c "$client_tty" -w ${shellQuote(width)} -h ${shellQuote(height)} -E ${shellQuote(watchCmd)} >/dev/null 2>&1; ` +
+            `fi`));
+}
 function main() {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
@@ -265,7 +272,7 @@ function main() {
         logger.log('session', 'ok', 'watch_cmd_set', `watch_audit_file=${watchAudit}`);
         if (options.doAttach) {
             if (options.autoPopup) {
-                const hookCmd = `display-popup -c '#{hook_client}' -w ${options.popupWidth} -h ${options.popupHeight} -E "${watchCmd}"`;
+                const hookCmd = buildPopupHookCommand(options.session, options.popupWidth, options.popupHeight, watchCmd);
                 setHook(options.session, 'client-attached', hookCmd);
                 setHook(options.session, 'client-resized', hookCmd);
                 logger.log('popup', 'ok', 'hook_set_external_attach_and_resize', `size=${options.popupWidth}x${options.popupHeight}`);
@@ -286,7 +293,7 @@ function main() {
         }
         console.log(`Sessão pronta: ${options.session}`);
         if (options.autoPopup) {
-            const hookCmd = `display-popup -c '#{hook_client}' -w ${options.popupWidth} -h ${options.popupHeight} -E "${watchCmd}"`;
+            const hookCmd = buildPopupHookCommand(options.session, options.popupWidth, options.popupHeight, watchCmd);
             setHook(options.session, 'client-attached', hookCmd);
             setHook(options.session, 'client-resized', hookCmd);
             console.log(`Popup no attach: ${options.popupWidth} x ${options.popupHeight}`);
