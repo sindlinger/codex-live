@@ -65,8 +65,10 @@ async function main(): Promise<number> {
   console.log(`${dim('Dica:')} rode em outro terminal:`);
   console.log(`  ${dim('codex-live exec --repo /mnt/c/git/operpdf-textopsalign -- ./run.exe 1-12 --inputs @M-DESP --inputs :Q22 --probe')}`);
   console.log('');
+  console.log(`${dim('Modo:')} histórico completo + acompanhamento em tempo real`);
+  console.log('');
 
-  const tail = spawn('tail', ['-n', '0', '-F', commandsLog, outputLog], {
+  const tail = spawn('tail', ['-n', '+1', '-F', commandsLog, outputLog], {
     stdio: 'inherit'
   });
 
