@@ -44,7 +44,7 @@ function tryTmuxPopup(args) {
     const probe = spawnSync('tmux', ['display-popup', '-E', "bash -lc 'echo tmux_popup_probe >/dev/null'"], { stdio: 'ignore' });
     if ((probe.status ?? 1) !== 0)
         return false;
-    const watchCmd = `cd ${BASE_DIR} && ./bin/codex-live-watch ${args.sessionId}`;
+    const watchCmd = `cd ${BASE_DIR} && ${quoteSingle(process.execPath)} ${quoteSingle(path.join(BASE_DIR, 'dist', 'codex-live-watch.js'))} ${quoteSingle(args.sessionId)}`;
     const popupCmd = `bash -lc ${quoteSingle(watchCmd)}`;
     const res = spawnSync('tmux', ['display-popup', '-w', args.width, '-h', args.height, '-E', popupCmd], {
         stdio: 'inherit'
@@ -55,8 +55,8 @@ function main() {
     const args = parseArgs(process.argv.slice(2));
     if (tryTmuxPopup(args))
         return 0;
-    const openWatch = path.join(BASE_DIR, 'bin', 'codex-live-open-watch');
-    const res = spawnSync(openWatch, [args.sessionId], { stdio: 'inherit' });
+    const openWatch = path.join(BASE_DIR, 'dist', 'codex-live-open-watch.js');
+    const res = spawnSync(process.execPath, [openWatch, args.sessionId], { stdio: 'inherit' });
     return res.status ?? 1;
 }
 process.exit(main());

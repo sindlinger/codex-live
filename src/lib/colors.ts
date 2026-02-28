@@ -1,6 +1,7 @@
 export const colors = {
   reset: '\u001b[0m',
   stage: '\u001b[1;34m',
+  dodgeBlue: '\u001b[38;5;39m',
   cmd: '\u001b[1;32m',
   ok: '\u001b[1;32m',
   fail: '\u001b[1;31m',
@@ -10,7 +11,7 @@ export const colors = {
 } as const;
 
 export function useColor(): boolean {
-  return Boolean(process.stdout.isTTY) && process.env.NO_COLOR !== '1';
+  return true;
 }
 
 export function paint(value: string, color: string): string {
@@ -19,6 +20,7 @@ export function paint(value: string, color: string): string {
 }
 
 export const stage = (msg: string): string => paint(msg, colors.stage);
+export const dodgeBlue = (msg: string): string => paint(msg, colors.dodgeBlue);
 export const ok = (msg: string): string => paint(msg, colors.ok);
 export const warn = (msg: string): string => paint(msg, colors.warn);
 export const fail = (msg: string): string => paint(msg, colors.fail);

@@ -3,6 +3,7 @@ import path from 'node:path';
 function defaultConfig() {
     return {
         defaultRepo: '',
+        defaultSession: '',
         repos: {
             operpdf: '/mnt/c/git/operpdf-textopsalign'
         }
@@ -20,6 +21,7 @@ export function loadConfig(baseDir) {
         const parsed = JSON.parse(raw);
         return {
             defaultRepo: parsed.defaultRepo ?? '',
+            defaultSession: parsed.defaultSession ?? '',
             repos: typeof parsed.repos === 'object' && parsed.repos ? parsed.repos : {}
         };
     }
@@ -42,5 +44,7 @@ export function resolveRepo(baseDir, cfg, inputRepo) {
         return cfg.repos[cfg.defaultRepo];
     if (cfg.defaultRepo && cfg.defaultRepo.includes('/'))
         return cfg.defaultRepo;
+    if (cfg.repos.operpdf)
+        return cfg.repos.operpdf;
     return baseDir;
 }

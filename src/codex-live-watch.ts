@@ -63,7 +63,7 @@ async function main(): Promise<number> {
   if (WATCH_AUDIT_FILE) console.log(`  - ${file(WATCH_AUDIT_FILE)}`);
   console.log('');
   console.log(`${dim('Dica:')} rode em outro terminal:`);
-  console.log(`  ${dim('codex-live-run --repo /mnt/c/git/operpdf-textopsalign -- ./run.exe 1-12 --inputs @M-DESP --inputs :Q22 --probe')}`);
+  console.log(`  ${dim('codex-live exec --repo /mnt/c/git/operpdf-textopsalign -- ./run.exe 1-12 --inputs @M-DESP --inputs :Q22 --probe')}`);
   console.log('');
 
   const tail = spawn('tail', ['-n', '0', '-F', commandsLog, outputLog], {

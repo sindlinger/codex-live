@@ -24,7 +24,7 @@ function main() {
         spawnSync('tmux', ['set-option', '-gu', '@watch_popup_pane'], { stdio: 'ignore' });
         return 0;
     }
-    const cmd = `cd ${BASE_DIR} && ./bin/codex-live-watch current`;
+    const cmd = `cd ${BASE_DIR} && ${process.execPath} ${BASE_DIR}/dist/codex-live-watch.js current`;
     const pop = tmux(['display-popup', '-w', '70%', '-h', '55%', '-E', cmd, '-P', '-F', '#{pane_id}']);
     if (pop.code !== 0 || !pop.out)
         return 1;

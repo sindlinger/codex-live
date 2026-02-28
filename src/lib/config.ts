@@ -3,12 +3,14 @@ import path from 'node:path';
 
 export interface LiveConfig {
   defaultRepo: string;
+  defaultSession: string;
   repos: Record<string, string>;
 }
 
 function defaultConfig(): LiveConfig {
   return {
     defaultRepo: '',
+    defaultSession: '',
     repos: {
       operpdf: '/mnt/c/git/operpdf-textopsalign'
     }
@@ -27,6 +29,7 @@ export function loadConfig(baseDir: string): LiveConfig {
     const parsed = JSON.parse(raw) as Partial<LiveConfig>;
     return {
       defaultRepo: parsed.defaultRepo ?? '',
+      defaultSession: parsed.defaultSession ?? '',
       repos: typeof parsed.repos === 'object' && parsed.repos ? parsed.repos : {}
     };
   } catch {
@@ -47,5 +50,6 @@ export function resolveRepo(baseDir: string, cfg: LiveConfig, inputRepo?: string
   }
   if (cfg.defaultRepo && cfg.repos[cfg.defaultRepo]) return cfg.repos[cfg.defaultRepo];
   if (cfg.defaultRepo && cfg.defaultRepo.includes('/')) return cfg.defaultRepo;
+  if (cfg.repos.operpdf) return cfg.repos.operpdf;
   return baseDir;
 }

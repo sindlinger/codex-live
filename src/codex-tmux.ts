@@ -283,9 +283,10 @@ function main(): number {
     logger.log('preflight', 'ok', 'validated');
 
     const watchAudit = logger.getWatchAuditFile();
+    const watchProgram = `${shellQuote(process.execPath)} ${shellQuote(path.join(BASE_DIR, 'dist', 'codex-live-watch.js'))} current`;
     const watchCmd = options.logEnabled
-      ? `cd ${shellQuote(BASE_DIR)} && CODEX_WATCH_AUDIT_FILE=${shellQuote(watchAudit)} ./bin/codex-live-watch current`
-      : `cd ${shellQuote(BASE_DIR)} && ./bin/codex-live-watch current`;
+      ? `cd ${shellQuote(BASE_DIR)} && CODEX_WATCH_AUDIT_FILE=${shellQuote(watchAudit)} ${watchProgram}`
+      : `cd ${shellQuote(BASE_DIR)} && ${watchProgram}`;
 
     const hasSession = tmux(['has-session', '-t', options.session]).code === 0;
     if (!hasSession) {

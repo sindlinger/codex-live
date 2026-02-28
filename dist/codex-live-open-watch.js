@@ -10,13 +10,13 @@ function psQuoteSingle(value) {
 function openInPowerShell(sessionId) {
     if (!commandExists('powershell.exe'))
         return false;
-    const inner = `cd ${BASE_DIR} && ./bin/codex-live-watch ${sessionId}`;
+    const inner = `cd ${BASE_DIR} && ${process.execPath} ${BASE_DIR}/dist/codex-live-watch.js ${sessionId}`;
     const ps = `$cmd='wsl.exe -e bash -lc ''${psQuoteSingle(inner)}'''; Start-Process powershell.exe -ArgumentList @('-NoExit','-Command',$cmd)`;
     const res = spawnSync('powershell.exe', ['-NoProfile', '-Command', ps], { stdio: 'ignore' });
     return (res.status ?? 1) === 0;
 }
 function openLinuxTerminal(sessionId) {
-    const watchCmd = `cd '${BASE_DIR}' && ./bin/codex-live-watch '${sessionId}'; exec bash`;
+    const watchCmd = `cd '${BASE_DIR}' && '${process.execPath}' '${BASE_DIR}/dist/codex-live-watch.js' '${sessionId}'; exec bash`;
     if (commandExists('gnome-terminal')) {
         const res = spawnSync('gnome-terminal', ['--', 'bash', '-lc', watchCmd], { stdio: 'ignore' });
         if ((res.status ?? 1) === 0)
@@ -38,7 +38,7 @@ function main() {
     if (openLinuxTerminal(sessionId))
         return 0;
     console.log(warn('Não consegui abrir nova janela automaticamente. Rode manualmente:'));
-    console.log(shellJoin(['cd', BASE_DIR, '&&', './bin/codex-live-watch', sessionId]));
+    console.log(shellJoin(['cd', BASE_DIR, '&&', process.execPath, `${BASE_DIR}/dist/codex-live-watch.js`, sessionId]));
     return 1;
 }
 process.exit(main());
