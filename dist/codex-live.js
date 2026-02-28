@@ -32,10 +32,13 @@ function usage() {
     console.log(`  ${dodgeBlue('codex-live flow run')}`);
     console.log(`  ${dodgeBlue('codex-live flow quick :Q150 --probe')}`);
     console.log(`  ${dodgeBlue('codex-live exec -- git status')}`);
+    console.log(`  ${dodgeBlue('codex-live git status')}`);
+    console.log(`  ${dodgeBlue('codex-live ./run.exe 1-10 --inputs @M-DESP --inputs :Q22 --probe')}`);
     console.log(`  ${dodgeBlue('codex-live codex -- --version')}`);
     console.log(`  ${dodgeBlue('codex-live popup current --width 70% --height 55%')}`);
     console.log(`  ${dodgeBlue('codex-live tmux --repo operpdf')}`);
-    console.log(`\n${dim('Use `codex-live <command> --help` for command-specific help.')}`);
+    console.log(`\n${dim('Unknown commands are executed as: codex-live exec -- <command> ...')}`);
+    console.log(`${dim('Use `codex-live <command> --help` for command-specific help.')}`);
 }
 function parseOpts(args) {
     const opts = { params: [] };
@@ -404,7 +407,7 @@ async function main() {
             case 'tmux': return cmdMonitor('tmux', args);
             case 'codex': return cmdCodex(args);
             default:
-                throw new Error(`comando inválido: ${cmdNameRaw}`);
+                return cmdExec([...leadingGlobals, cmdNameRaw, ...rawArgs.slice(idx + 1)]);
         }
     }
     catch (err) {
