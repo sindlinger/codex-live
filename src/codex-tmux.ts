@@ -251,7 +251,7 @@ function spawnPopupOnAttach(session: string, width: string, height: string, watc
     `for _ in $(seq 1 80); do ` +
     `client_tty=$(tmux list-clients -t ${shellQuote(session)} -F '#{client_tty}' 2>/dev/null | head -n1 || true); ` +
     `if [ -n "$client_tty" ]; then ` +
-    `tmux display-popup -t "$client_tty" -w ${shellQuote(width)} -h ${shellQuote(height)} -E ${shellQuote(watchCmd)} >/dev/null 2>&1; ` +
+    `tmux display-popup -c "$client_tty" -w ${shellQuote(width)} -h ${shellQuote(height)} -E ${shellQuote(watchCmd)} >/dev/null 2>&1; ` +
     `exit 0; fi; sleep 0.1; done; exit 0`;
   spawnSync('tmux', ['run-shell', '-b', worker], { stdio: 'ignore' });
   logger.log('popup_fallback', 'ok', 'scheduled', `size=${width}x${height}`);
@@ -310,7 +310,7 @@ function main(): number {
 
     if (options.doAttach) {
       if (options.autoPopup) {
-        const hookCmd = `display-popup -t '#{client_tty}' -w ${options.popupWidth} -h ${options.popupHeight} -E "${watchCmd}"`;
+        const hookCmd = `display-popup -c '#{hook_client}' -w ${options.popupWidth} -h ${options.popupHeight} -E "${watchCmd}"`;
         setHook(options.session, 'client-attached', hookCmd);
         setHook(options.session, 'client-resized', hookCmd);
         logger.log('popup', 'ok', 'hook_set_external_attach_and_resize', `size=${options.popupWidth}x${options.popupHeight}`);
@@ -332,7 +332,7 @@ function main(): number {
 
     console.log(`Sessão pronta: ${options.session}`);
     if (options.autoPopup) {
-      const hookCmd = `display-popup -t '#{client_tty}' -w ${options.popupWidth} -h ${options.popupHeight} -E "${watchCmd}"`;
+      const hookCmd = `display-popup -c '#{hook_client}' -w ${options.popupWidth} -h ${options.popupHeight} -E "${watchCmd}"`;
       setHook(options.session, 'client-attached', hookCmd);
       setHook(options.session, 'client-resized', hookCmd);
       console.log(`Popup no attach: ${options.popupWidth} x ${options.popupHeight}`);
