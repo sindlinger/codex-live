@@ -295,11 +295,37 @@ function windowExists(windowId: string): boolean {
   return windows.out.split(/\r?\n/).map((x) => x.trim()).includes(windowId.trim());
 }
 
+function paneCurrentCommand(target: string): string {
+  const out = tmux(['list-panes', '-t', target, '-F', '#{pane_current_command}']);
+  if (out.code !== 0) return '';
+  return out.out.split(/\r?\n/).map((x) => x.trim()).find((x) => x.length > 0) ?? '';
+}
+
+function windowFirstPaneInfo(windowId: string): { paneId: string; cmd: string } {
+  const out = tmux(['list-panes', '-t', windowId, '-F', '#{pane_id} #{pane_current_command}']);
+  if (out.code !== 0) return { paneId: '', cmd: '' };
+  const first = out.out.split(/\r?\n/).map((x) => x.trim()).find((x) => x.length > 0) ?? '';
+  if (!first) return { paneId: '', cmd: '' };
+  const sep = first.indexOf(' ');
+  if (sep <= 0) return { paneId: first, cmd: '' };
+  return { paneId: first.slice(0, sep), cmd: first.slice(sep + 1).trim() };
+}
+
+function isWatcherCmd(cmd: string): boolean {
+  const c = (cmd || '').trim().toLowerCase();
+  return c === 'node' || c === 'tail';
+}
+
 function ensureWatchSplit(session: string, mainPaneId: string, watchCmd: string, logger: JsonLogger): void {
   const existing = tmux(['show-options', '-t', session, '-qv', '@watch_pane']).out;
   if (existing && paneExists(existing)) {
-    logger.log('split', 'ok', 'reused', `pane=${existing}`);
-    return;
+    const cmd = paneCurrentCommand(existing);
+    if (isWatcherCmd(cmd)) {
+      logger.log('split', 'ok', 'reused', `pane=${existing};cmd=${cmd}`);
+      return;
+    }
+    spawnSync('tmux', ['kill-pane', '-t', existing], { stdio: 'ignore' });
+    logger.log('split', 'warn', 'stale_recreated', `pane=${existing};cmd=${cmd || 'unknown'}`);
   }
   const target = mainPaneId || `${session}:0.0`;
   const split = tmux(['split-window', '-t', target, '-v', '-l', '30%', '-P', '-F', '#{pane_id}', watchCmd]);
@@ -314,8 +340,13 @@ function ensureWatchSplit(session: string, mainPaneId: string, watchCmd: string,
 function ensureWatchWindow(session: string, watchCmd: string, logger: JsonLogger): void {
   const existing = tmux(['show-options', '-t', session, '-qv', '@watch_window']).out;
   if (existing && windowExists(existing)) {
-    logger.log('window', 'ok', 'reused', `window=${existing}`);
-    return;
+    const info = windowFirstPaneInfo(existing);
+    if (info.paneId && isWatcherCmd(info.cmd)) {
+      logger.log('window', 'ok', 'reused', `window=${existing};pane=${info.paneId};cmd=${info.cmd}`);
+      return;
+    }
+    spawnSync('tmux', ['kill-window', '-t', existing], { stdio: 'ignore' });
+    logger.log('window', 'warn', 'stale_recreated', `window=${existing};cmd=${info.cmd || 'unknown'}`);
   }
   const created = tmux(['new-window', '-t', session, '-d', '-n', 'watch-log', '-P', '-F', '#{window_id}', watchCmd]);
   if (created.code === 0 && created.out) {
