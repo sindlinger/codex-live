@@ -1,0 +1,11 @@
+# runtime state
+logs/
+sessions/
+
+# node
+node_modules/
+
+# os/editor
+.DS_Store
+*.swp
+*.swo
