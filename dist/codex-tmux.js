@@ -274,8 +274,8 @@ function main() {
             if (options.autoPopup) {
                 const hookCmd = buildPopupHookCommand(options.session, options.popupWidth, options.popupHeight, watchCmd);
                 setHook(options.session, 'client-attached', hookCmd);
-                setHook(options.session, 'client-resized', hookCmd);
-                logger.log('popup', 'ok', 'hook_set_external_attach_and_resize', `size=${options.popupWidth}x${options.popupHeight}`);
+                setHook(options.session, 'client-resized');
+                logger.log('popup', 'ok', 'hook_set_external_attach_only', `size=${options.popupWidth}x${options.popupHeight}`);
                 spawnPopupOnAttach(options.session, options.popupWidth, options.popupHeight, watchCmd, logger);
             }
             else {
@@ -295,9 +295,9 @@ function main() {
         if (options.autoPopup) {
             const hookCmd = buildPopupHookCommand(options.session, options.popupWidth, options.popupHeight, watchCmd);
             setHook(options.session, 'client-attached', hookCmd);
-            setHook(options.session, 'client-resized', hookCmd);
+            setHook(options.session, 'client-resized');
             console.log(`Popup no attach: ${options.popupWidth} x ${options.popupHeight}`);
-            logger.log('popup', 'ok', 'hook_set_no_attach_resize', `size=${options.popupWidth}x${options.popupHeight}`);
+            logger.log('popup', 'ok', 'hook_set_no_attach_only', `size=${options.popupWidth}x${options.popupHeight}`);
         }
         console.log(`Anexar: tmux attach -t ${options.session}`);
         logger.log('attach', 'ok', 'skipped_by_flag', `session=${options.session}`);
