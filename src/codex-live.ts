@@ -319,7 +319,11 @@ async function cmdMonitor(action: 'watch' | 'open' | 'popup' | 'tmux', args: str
   const sessionId = resolveSessionWithConfig(cfg, resolvedOpts);
 
   if (opts.help) {
-    console.log(`uso: codex-live ${action} [current|<id>|<número>]${action === 'popup' || action === 'tmux' ? ' [--width 70%] [--height 55%]' : ''}`);
+    if (action === 'tmux') {
+      console.log('uso: codex-live tmux [current|<id>|<número>] [--width 70%] [--height 55%] [--watch popup|split|both|none] [--no-attach] [--log]');
+    } else {
+      console.log(`uso: codex-live ${action} [current|<id>|<número>]${action === 'popup' ? ' [--width 70%] [--height 55%]' : ''}`);
+    }
     return 0;
   }
 

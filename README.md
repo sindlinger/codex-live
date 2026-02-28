@@ -66,6 +66,9 @@ codex-live watch
 codex-live open current
 codex-live popup current --width 70% --height 55%
 codex-live tmux --repo operpdf --session codex_live --width 70% --height 55%
+codex-live tmux --watch popup
+codex-live tmux --watch split
+codex-live tmux --watch both
 ```
 
 ## Estrutura

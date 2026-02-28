@@ -6,6 +6,7 @@ import { baseDirFromImportMeta, ensureDir, nowCompactUtc, nowIso, shellQuote, up
 import { commandExists, execCapture } from './lib/proc.js';
 
 type Status = 'ok' | 'warn' | 'fail';
+type WatchMode = 'popup' | 'split' | 'both' | 'none';
 
 interface EventRow {
   ts: string;
@@ -18,7 +19,7 @@ interface EventRow {
 interface Options {
   session: string;
   repo: string;
-  autoPopup: boolean;
+  watchMode: WatchMode;
   doAttach: boolean;
   popupWidth: string;
   popupHeight: string;
@@ -35,7 +36,7 @@ const RUN_ID = `${nowCompactUtc()}__${process.pid}`;
 function usage(): void {
   console.log(
     `Uso:
-  codex-tmux [--session <nome>] [--repo <path>] [--no-popup] [--no-attach]
+  codex-tmux [--session <nome>] [--repo <path>] [--watch <popup|split|both|none>] [--no-popup] [--no-attach]
              [--popup-width <70%>] [--popup-height <55%>]
              [--log] [--log-dir <path>] [--log-file <path>]
 
@@ -52,7 +53,7 @@ function parseArgs(argv: string[]): Options {
   const out: Options = {
     session: process.env.CODEX_TMUX_SESSION || 'codex_live',
     repo: process.env.CODEX_REPO_DIR || '/mnt/c/git/operpdf-textopsalign',
-    autoPopup: true,
+    watchMode: 'popup',
     doAttach: true,
     popupWidth: process.env.CODEX_POPUP_WIDTH || '70%',
     popupHeight: process.env.CODEX_POPUP_HEIGHT || '55%',
@@ -77,7 +78,15 @@ function parseArgs(argv: string[]): Options {
       continue;
     }
     if (a === '--no-popup') {
-      out.autoPopup = false;
+      out.watchMode = out.watchMode === 'both' ? 'split' : 'none';
+      continue;
+    }
+    if (a === '--watch') {
+      const v = (args.shift() || '').toLowerCase();
+      if (v !== 'popup' && v !== 'split' && v !== 'both' && v !== 'none') {
+        throw new Error('--watch exige: popup|split|both|none');
+      }
+      out.watchMode = v;
       continue;
     }
     if (a === '--no-attach') {
@@ -179,7 +188,9 @@ class JsonLogger {
       config: {
         session_name: options.session,
         repo_dir: options.repo,
-        auto_popup: options.autoPopup,
+        watch_mode: options.watchMode,
+        auto_popup: options.watchMode === 'popup' || options.watchMode === 'both',
+        split_enabled: options.watchMode === 'split' || options.watchMode === 'both',
         do_attach: options.doAttach,
         popup_width: options.popupWidth,
         popup_height: options.popupHeight,
@@ -269,6 +280,29 @@ function buildPopupHookCommand(session: string, width: string, height: string, w
   );
 }
 
+function paneExists(paneId: string): boolean {
+  if (!paneId) return false;
+  const panes = tmux(['list-panes', '-a', '-F', '#{pane_id}']);
+  if (panes.code !== 0) return false;
+  return panes.out.split(/\r?\n/).map((x) => x.trim()).includes(paneId.trim());
+}
+
+function ensureWatchSplit(session: string, mainPaneId: string, watchCmd: string, logger: JsonLogger): void {
+  const existing = tmux(['show-options', '-t', session, '-gqv', '@watch_pane']).out;
+  if (existing && paneExists(existing)) {
+    logger.log('split', 'ok', 'reused', `pane=${existing}`);
+    return;
+  }
+  const target = mainPaneId || `${session}:0.0`;
+  const split = tmux(['split-window', '-t', target, '-v', '-l', '30%', '-P', '-F', '#{pane_id}', watchCmd]);
+  if (split.code === 0 && split.out) {
+    spawnSync('tmux', ['set-option', '-t', session, '-gq', '@watch_pane', split.out], { stdio: 'ignore' });
+    logger.log('split', 'ok', 'created', `pane=${split.out};target=${target}`);
+    return;
+  }
+  logger.log('split', 'warn', 'failed', `target=${target};code=${split.code};err=${split.err}`);
+}
+
 function main(): number {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -282,7 +316,7 @@ function main(): number {
     'parse',
     'ok',
     'parsed',
-    `session=${options.session};repo=${options.repo};auto_popup=${options.autoPopup};` +
+    `session=${options.session};repo=${options.repo};watch_mode=${options.watchMode};` +
       `do_attach=${options.doAttach};size=${options.popupWidth}x${options.popupHeight};log=${options.logEnabled}`
   );
 
@@ -339,17 +373,23 @@ function main(): number {
       logger.log('watch_logs', 'warn', 'pipe_pane_skipped', 'reason=main_pane_not_found');
     }
 
+    const popupEnabled = options.watchMode === 'popup' || options.watchMode === 'both';
+    const splitEnabled = options.watchMode === 'split' || options.watchMode === 'both';
+    if (splitEnabled) {
+      ensureWatchSplit(options.session, mainPaneId, watchCmd, logger);
+    }
+
     if (options.doAttach) {
-      if (options.autoPopup) {
+      if (popupEnabled) {
         const hookCmd = buildPopupHookCommand(options.session, options.popupWidth, options.popupHeight, watchCmd);
         setHook(options.session, 'client-attached', hookCmd);
         setHook(options.session, 'client-resized');
-        logger.log('popup', 'ok', 'hook_set_external_attach_only', `size=${options.popupWidth}x${options.popupHeight}`);
+        logger.log('popup', 'ok', 'hook_set_external_attach_only', `size=${options.popupWidth}x${options.popupHeight};mode=${options.watchMode}`);
         spawnPopupOnAttach(options.session, options.popupWidth, options.popupHeight, watchCmd, logger);
       } else {
         setHook(options.session, 'client-attached');
         setHook(options.session, 'client-resized');
-        logger.log('popup', 'ok', 'disabled');
+        logger.log('popup', 'ok', 'disabled', `mode=${options.watchMode}`);
       }
 
       if (!launchAttachInNewTerminal(options.session, logger)) {
@@ -362,12 +402,15 @@ function main(): number {
     }
 
     console.log(`Sessão pronta: ${options.session}`);
-    if (options.autoPopup) {
+    if (popupEnabled) {
       const hookCmd = buildPopupHookCommand(options.session, options.popupWidth, options.popupHeight, watchCmd);
       setHook(options.session, 'client-attached', hookCmd);
       setHook(options.session, 'client-resized');
       console.log(`Popup no attach: ${options.popupWidth} x ${options.popupHeight}`);
-      logger.log('popup', 'ok', 'hook_set_no_attach_only', `size=${options.popupWidth}x${options.popupHeight}`);
+      logger.log('popup', 'ok', 'hook_set_no_attach_only', `size=${options.popupWidth}x${options.popupHeight};mode=${options.watchMode}`);
+    }
+    if (splitEnabled) {
+      console.log('Split de watch: habilitado');
     }
     console.log(`Anexar: tmux attach -t ${options.session}`);
     logger.log('attach', 'ok', 'skipped_by_flag', `session=${options.session}`);
