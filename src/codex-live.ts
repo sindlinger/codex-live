@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
 import path from 'node:path';
 import { baseDirFromImportMeta } from './lib/runtime.js';
 import { loadConfig, saveConfig, resolveRepo, type LiveConfig } from './lib/config.js';
@@ -8,6 +9,8 @@ import { stage, dodgeBlue, ok, fail, file, dim } from './lib/colors.js';
 
 const BASE_DIR = baseDirFromImportMeta(import.meta.url);
 const DIST_DIR = path.join(BASE_DIR, 'dist');
+const HOME_TMUX_CONF = path.join(process.env.HOME ?? '', '.tmux.conf');
+const LOCAL_TMUX_CONF = path.join(BASE_DIR, '.tmux.conf');
 
 type ParsedOpts = {
   repo?: string;
@@ -93,6 +96,18 @@ function ensureScript(name: string): string {
 function runInternal(scriptName: string, args: string[]): Promise<number> {
   const script = ensureScript(scriptName);
   return runProcess(process.execPath, [script, ...args]);
+}
+
+function syncTmuxConfCopy(): void {
+  if (!process.env.HOME) return;
+  if (!fs.existsSync(LOCAL_TMUX_CONF)) return;
+  try {
+    const st = fs.lstatSync(HOME_TMUX_CONF);
+    if (st.isSymbolicLink()) fs.unlinkSync(HOME_TMUX_CONF);
+  } catch {
+    // arquivo não existe: segue para cópia
+  }
+  fs.copyFileSync(LOCAL_TMUX_CONF, HOME_TMUX_CONF);
 }
 
 function resolveSessionWithConfig(cfg: LiveConfig, opts: ParsedOpts): string {
@@ -304,6 +319,7 @@ async function cmdMonitor(action: 'watch' | 'open' | 'popup' | 'tmux', args: str
   }
 
   if (action === 'tmux') {
+    syncTmuxConfCopy();
     const repo = resolveRepo(BASE_DIR, cfg, opts.repo);
     const callArgs: string[] = [];
     const tmuxSession = sessionId === 'current' ? 'codex_live' : sessionId;
