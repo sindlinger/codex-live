@@ -311,9 +311,9 @@ function main(): number {
     if (options.doAttach) {
       if (options.autoPopup) {
         const hookCmd = `display-popup -t '#{client_tty}' -w ${options.popupWidth} -h ${options.popupHeight} -E "${watchCmd}"`;
-        setHook(options.session, 'client-attached');
+        setHook(options.session, 'client-attached', hookCmd);
         setHook(options.session, 'client-resized', hookCmd);
-        logger.log('popup', 'ok', 'hook_set_external_resize_only', `size=${options.popupWidth}x${options.popupHeight}`);
+        logger.log('popup', 'ok', 'hook_set_external_attach_and_resize', `size=${options.popupWidth}x${options.popupHeight}`);
         spawnPopupOnAttach(options.session, options.popupWidth, options.popupHeight, watchCmd, logger);
       } else {
         setHook(options.session, 'client-attached');
