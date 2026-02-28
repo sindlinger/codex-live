@@ -6,7 +6,7 @@ import { baseDirFromImportMeta, ensureDir, nowCompactUtc, nowIso, shellQuote, up
 import { commandExists, execCapture } from './lib/proc.js';
 
 type Status = 'ok' | 'warn' | 'fail';
-type WatchMode = 'popup' | 'split' | 'both' | 'none';
+type WatchMode = 'popup' | 'split' | 'both' | 'window' | 'none';
 
 interface EventRow {
   ts: string;
@@ -36,7 +36,7 @@ const RUN_ID = `${nowCompactUtc()}__${process.pid}`;
 function usage(): void {
   console.log(
     `Uso:
-  codex-tmux [--session <nome>] [--repo <path>] [--watch <popup|split|both|none>] [--no-popup] [--no-attach]
+  codex-tmux [--session <nome>] [--repo <path>] [--watch <popup|split|both|window|none>] [--no-popup] [--no-attach]
              [--popup-width <70%>] [--popup-height <55%>]
              [--log] [--log-dir <path>] [--log-file <path>]
 
@@ -83,8 +83,8 @@ function parseArgs(argv: string[]): Options {
     }
     if (a === '--watch') {
       const v = (args.shift() || '').toLowerCase();
-      if (v !== 'popup' && v !== 'split' && v !== 'both' && v !== 'none') {
-        throw new Error('--watch exige: popup|split|both|none');
+      if (v !== 'popup' && v !== 'split' && v !== 'both' && v !== 'window' && v !== 'none') {
+        throw new Error('--watch exige: popup|split|both|window|none');
       }
       out.watchMode = v;
       continue;
@@ -191,6 +191,7 @@ class JsonLogger {
         watch_mode: options.watchMode,
         auto_popup: options.watchMode === 'popup' || options.watchMode === 'both',
         split_enabled: options.watchMode === 'split' || options.watchMode === 'both',
+        window_enabled: options.watchMode === 'window',
         do_attach: options.doAttach,
         popup_width: options.popupWidth,
         popup_height: options.popupHeight,
@@ -287,8 +288,15 @@ function paneExists(paneId: string): boolean {
   return panes.out.split(/\r?\n/).map((x) => x.trim()).includes(paneId.trim());
 }
 
+function windowExists(windowId: string): boolean {
+  if (!windowId) return false;
+  const windows = tmux(['list-windows', '-a', '-F', '#{window_id}']);
+  if (windows.code !== 0) return false;
+  return windows.out.split(/\r?\n/).map((x) => x.trim()).includes(windowId.trim());
+}
+
 function ensureWatchSplit(session: string, mainPaneId: string, watchCmd: string, logger: JsonLogger): void {
-  const existing = tmux(['show-options', '-t', session, '-gqv', '@watch_pane']).out;
+  const existing = tmux(['show-options', '-t', session, '-qv', '@watch_pane']).out;
   if (existing && paneExists(existing)) {
     logger.log('split', 'ok', 'reused', `pane=${existing}`);
     return;
@@ -296,11 +304,44 @@ function ensureWatchSplit(session: string, mainPaneId: string, watchCmd: string,
   const target = mainPaneId || `${session}:0.0`;
   const split = tmux(['split-window', '-t', target, '-v', '-l', '30%', '-P', '-F', '#{pane_id}', watchCmd]);
   if (split.code === 0 && split.out) {
-    spawnSync('tmux', ['set-option', '-t', session, '-gq', '@watch_pane', split.out], { stdio: 'ignore' });
+    spawnSync('tmux', ['set-option', '-t', session, '-q', '@watch_pane', split.out], { stdio: 'ignore' });
     logger.log('split', 'ok', 'created', `pane=${split.out};target=${target}`);
     return;
   }
   logger.log('split', 'warn', 'failed', `target=${target};code=${split.code};err=${split.err}`);
+}
+
+function ensureWatchWindow(session: string, watchCmd: string, logger: JsonLogger): void {
+  const existing = tmux(['show-options', '-t', session, '-qv', '@watch_window']).out;
+  if (existing && windowExists(existing)) {
+    logger.log('window', 'ok', 'reused', `window=${existing}`);
+    return;
+  }
+  const created = tmux(['new-window', '-t', session, '-d', '-n', 'watch-log', '-P', '-F', '#{window_id}', watchCmd]);
+  if (created.code === 0 && created.out) {
+    spawnSync('tmux', ['set-option', '-t', session, '-q', '@watch_window', created.out], { stdio: 'ignore' });
+    logger.log('window', 'ok', 'created', `window=${created.out}`);
+    return;
+  }
+  logger.log('window', 'warn', 'failed', `code=${created.code};err=${created.err}`);
+}
+
+function clearWatchSplit(session: string, logger: JsonLogger): void {
+  const existing = tmux(['show-options', '-t', session, '-qv', '@watch_pane']).out;
+  if (existing && paneExists(existing)) {
+    spawnSync('tmux', ['kill-pane', '-t', existing], { stdio: 'ignore' });
+    logger.log('split', 'ok', 'closed', `pane=${existing}`);
+  }
+  spawnSync('tmux', ['set-option', '-t', session, '-u', '@watch_pane'], { stdio: 'ignore' });
+}
+
+function clearWatchWindow(session: string, logger: JsonLogger): void {
+  const existing = tmux(['show-options', '-t', session, '-qv', '@watch_window']).out;
+  if (existing && windowExists(existing)) {
+    spawnSync('tmux', ['kill-window', '-t', existing], { stdio: 'ignore' });
+    logger.log('window', 'ok', 'closed', `window=${existing}`);
+  }
+  spawnSync('tmux', ['set-option', '-t', session, '-u', '@watch_window'], { stdio: 'ignore' });
 }
 
 function main(): number {
@@ -359,7 +400,7 @@ function main(): number {
       logger.log('session', 'ok', 'reused', `session=${options.session}`);
     }
 
-    spawnSync('tmux', ['set-option', '-t', options.session, '-gq', '@codex_watch_cmd', watchCmd], { stdio: 'ignore' });
+    spawnSync('tmux', ['set-option', '-t', options.session, '-q', '@codex_watch_cmd', watchCmd], { stdio: 'ignore' });
     logger.log('session', 'ok', 'watch_cmd_set', `watch_audit_file=${watchAudit}`);
 
     const panes = tmux(['list-panes', '-t', options.session, '-F', '#{pane_id}']);
@@ -375,8 +416,16 @@ function main(): number {
 
     const popupEnabled = options.watchMode === 'popup' || options.watchMode === 'both';
     const splitEnabled = options.watchMode === 'split' || options.watchMode === 'both';
+    const windowEnabled = options.watchMode === 'window';
     if (splitEnabled) {
       ensureWatchSplit(options.session, mainPaneId, watchCmd, logger);
+    } else {
+      clearWatchSplit(options.session, logger);
+    }
+    if (windowEnabled) {
+      ensureWatchWindow(options.session, watchCmd, logger);
+    } else {
+      clearWatchWindow(options.session, logger);
     }
 
     if (options.doAttach) {
@@ -411,6 +460,9 @@ function main(): number {
     }
     if (splitEnabled) {
       console.log('Split de watch: habilitado');
+    }
+    if (windowEnabled) {
+      console.log('Janela de watch: habilitada');
     }
     console.log(`Anexar: tmux attach -t ${options.session}`);
     logger.log('attach', 'ok', 'skipped_by_flag', `session=${options.session}`);

@@ -18,17 +18,17 @@ function main() {
         console.error('tmux não encontrado');
         return 1;
     }
-    const pane = tmux(['show-options', '-gqv', '@watch_pane']).out;
+    const pane = tmux(['show-options', '-qv', '@watch_pane']).out;
     if (pane && paneExists(pane)) {
         spawnSync('tmux', ['kill-pane', '-t', pane], { stdio: 'ignore' });
-        spawnSync('tmux', ['set-option', '-gu', '@watch_pane'], { stdio: 'ignore' });
+        spawnSync('tmux', ['set-option', '-u', '@watch_pane'], { stdio: 'ignore' });
         return 0;
     }
     const cmd = `cd ${BASE_DIR} && ${process.execPath} ${BASE_DIR}/dist/codex-live-watch.js current`;
     const split = tmux(['split-window', '-v', '-l', '30%', '-P', '-F', '#{pane_id}', cmd]);
     if (split.code !== 0 || !split.out)
         return 1;
-    spawnSync('tmux', ['set-option', '-gq', '@watch_pane', split.out], { stdio: 'ignore' });
+    spawnSync('tmux', ['set-option', '-q', '@watch_pane', split.out], { stdio: 'ignore' });
     spawnSync('tmux', ['select-pane', '-l'], { stdio: 'ignore' });
     return 0;
 }

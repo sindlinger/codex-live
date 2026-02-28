@@ -22,10 +22,10 @@ function main(): number {
     return 1;
   }
 
-  const pane = tmux(['show-options', '-gqv', '@watch_pane']).out;
+  const pane = tmux(['show-options', '-qv', '@watch_pane']).out;
   if (pane && paneExists(pane)) {
     spawnSync('tmux', ['kill-pane', '-t', pane], { stdio: 'ignore' });
-    spawnSync('tmux', ['set-option', '-gu', '@watch_pane'], { stdio: 'ignore' });
+    spawnSync('tmux', ['set-option', '-u', '@watch_pane'], { stdio: 'ignore' });
     return 0;
   }
 
@@ -33,7 +33,7 @@ function main(): number {
   const split = tmux(['split-window', '-v', '-l', '30%', '-P', '-F', '#{pane_id}', cmd]);
   if (split.code !== 0 || !split.out) return 1;
 
-  spawnSync('tmux', ['set-option', '-gq', '@watch_pane', split.out], { stdio: 'ignore' });
+  spawnSync('tmux', ['set-option', '-q', '@watch_pane', split.out], { stdio: 'ignore' });
   spawnSync('tmux', ['select-pane', '-l'], { stdio: 'ignore' });
   return 0;
 }
