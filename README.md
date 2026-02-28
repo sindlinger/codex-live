@@ -88,3 +88,13 @@ npm run build
 npm run check
 npm run clean && npm run rebuild
 ```
+
+### Versionamento automático no build
+
+- A cada `npm run build`, o `codex-live` incrementa automaticamente a versão patch (`x.y.z`).
+- O timestamp do build é salvo em `package.json` (`buildMeta.builtAtUtc`).
+- O `watch` mostra no cabeçalho:
+  - versão atual
+  - horário de início do watch
+  - horário de início da sessão
+  - horário do último build

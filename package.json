@@ -1,12 +1,13 @@
 {
   "name": "codex-live",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
+    "prebuild": "node ./scripts/bump-version.mjs",
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "rebuild": "npm run clean && npm run build",
@@ -15,5 +16,8 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "typescript": "^5.7.3"
+  },
+  "buildMeta": {
+    "builtAtUtc": "2026-02-28T18:21:30.794Z"
   }
 }

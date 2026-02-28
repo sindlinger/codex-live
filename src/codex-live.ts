@@ -6,11 +6,13 @@ import { loadConfig, saveConfig, resolveRepo, type LiveConfig } from './lib/conf
 import { resolveSessionId, formatSessions } from './lib/sessions.js';
 import { commandExists, runProcess } from './lib/proc.js';
 import { stage, dodgeBlue, ok, fail, file, dim } from './lib/colors.js';
+import { readBuildInfo } from './lib/build-info.js';
 
 const BASE_DIR = baseDirFromImportMeta(import.meta.url);
 const DIST_DIR = path.join(BASE_DIR, 'dist');
 const HOME_TMUX_CONF = path.join(process.env.HOME ?? '', '.tmux.conf');
 const LOCAL_TMUX_CONF = path.join(BASE_DIR, '.tmux.conf');
+const BUILD_INFO = readBuildInfo(BASE_DIR);
 
 type ParsedOpts = {
   repo?: string;
@@ -28,6 +30,7 @@ type ParsedOpts = {
 };
 
 function usage(): void {
+  console.log(`codex-live v${BUILD_INFO.version} (${BUILD_INFO.builtAtUtc})`);
   console.log('Codex live session orchestrator.\n');
   console.log(`Usage: ${dodgeBlue('codex-live')} [OPTIONS] <COMMAND>\n`);
 
