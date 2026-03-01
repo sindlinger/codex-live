@@ -1,12 +1,22 @@
 #!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { baseDirFromImportMeta, shellJoin } from './lib/runtime.js';
 import { commandExists } from './lib/proc.js';
 import { ok, warn, stage, dim } from './lib/colors.js';
 import { closeActiveWatchWindows, getCurrentTty } from './lib/watch-windows.js';
 const BASE_DIR = baseDirFromImportMeta(import.meta.url);
-function psQuoteSingle(value) {
-    return value.replace(/'/g, "''");
+const OPEN_LOG = path.join(BASE_DIR, 'logs', 'open-watch.log');
+function appendOpenLog(message) {
+    try {
+        fs.mkdirSync(path.dirname(OPEN_LOG), { recursive: true });
+        const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+        fs.appendFileSync(OPEN_LOG, `[${ts}] ${message}\n`, 'utf8');
+    }
+    catch {
+        // ignore log failures
+    }
 }
 function shDoubleQuote(value) {
     const escaped = value
@@ -29,36 +39,68 @@ function buildWatchInnerCommand(sessionId, launcher, ownerTty) {
     const watchExec = `${shDoubleQuote(process.execPath)} ${shDoubleQuote(`${BASE_DIR}/dist/codex-live-watch.js`)} ${shDoubleQuote(sessionId)}`;
     return `cd ${shDoubleQuote(BASE_DIR)} && ${envPrefix} ${watchExec}`;
 }
-function openInPowerShell(sessionId, ownerTty) {
-    if (!commandExists('powershell.exe'))
+function buildOpenWatchScriptCommand(sessionId, launcher, ownerTty) {
+    const script = `${BASE_DIR}/scripts/open-watch-window.sh`;
+    return shellJoin([
+        script,
+        sessionId,
+        launcher,
+        String(process.pid),
+        ownerTty,
+        'codex-live-open'
+    ]);
+}
+function openInTmux(sessionId, ownerTty) {
+    if (!commandExists('tmux'))
         return false;
-    const ownerTtySafe = ownerTty.replace(/\s+/g, '_');
-    const psArgs = [
-        '-e',
-        'env',
-        'CODEX_WATCH_WINDOW=1',
-        'CODEX_WATCH_LAUNCHER=powershell',
-        `CODEX_WATCH_OPEN_PID=${process.pid}`,
-        `CODEX_WATCH_OPEN_TTY=${ownerTtySafe}`,
-        'CODEX_WATCH_OWNER_CMD=codex-live-open',
-        process.execPath,
-        `${BASE_DIR}/dist/codex-live-watch.js`,
-        sessionId
-    ];
-    const psArray = psArgs.map((a) => `'${psQuoteSingle(a)}'`).join(',');
-    const ps = `$a=@(${psArray}); Start-Process wsl.exe -ArgumentList $a`;
-    const res = spawnSync('powershell.exe', ['-NoProfile', '-Command', ps], { stdio: 'ignore' });
+    const client = spawnSync('tmux', ['display-message', '-p', '#{client_tty}'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const clientTty = (client.stdout ?? '').trim();
+    appendOpenLog(`open_tmux_client_check status=${client.status ?? -1} client_tty=${clientTty || '(none)'} stderr=${(client.stderr ?? '').trim()}`);
+    if ((client.status ?? 1) !== 0 || !clientTty)
+        return false;
+    const popupCmd = buildOpenWatchScriptCommand(sessionId, 'tmux-popup', ownerTty);
+    // Prefer popup when there is a current client.
+    let res = spawnSync('tmux', ['display-popup', '-E', '-w', '70%', '-h', '55%', popupCmd], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    appendOpenLog(`open_tmux_popup status=${res.status ?? -1} stdout=${(res.stdout ?? '').trim()} stderr=${(res.stderr ?? '').trim()}`);
+    if ((res.status ?? 1) === 0)
+        return true;
+    // Fallback to a new tmux window if popup is unavailable.
+    const newWindowCmd = buildOpenWatchScriptCommand(sessionId, 'tmux-window', ownerTty);
+    res = spawnSync('tmux', ['new-window', '-n', 'codex-watch', newWindowCmd], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe']
+    });
+    appendOpenLog(`open_tmux_new_window status=${res.status ?? -1} stdout=${(res.stdout ?? '').trim()} stderr=${(res.stderr ?? '').trim()}`);
     return (res.status ?? 1) === 0;
 }
 function openLinuxTerminal(sessionId, ownerTty) {
+    const hasDisplay = Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+    if (!hasDisplay) {
+        appendOpenLog('open_linux_terminal skip=no_display');
+        return false;
+    }
     const watchCmd = `${buildWatchInnerCommand(sessionId, 'linux-terminal', ownerTty)}; exec bash`;
     if (commandExists('gnome-terminal')) {
-        const res = spawnSync('gnome-terminal', ['--', 'bash', '-lc', watchCmd], { stdio: 'ignore' });
+        const res = spawnSync('gnome-terminal', ['--', 'bash', '-lc', watchCmd], {
+            stdio: 'ignore',
+            timeout: 3000
+        });
+        appendOpenLog(`open_linux_gnome status=${res.status ?? -1} signal=${res.signal ?? ''}`);
         if ((res.status ?? 1) === 0)
             return true;
     }
     if (commandExists('x-terminal-emulator')) {
-        const res = spawnSync('x-terminal-emulator', ['-e', 'bash', '-lc', watchCmd], { stdio: 'ignore' });
+        const res = spawnSync('x-terminal-emulator', ['-e', 'bash', '-lc', watchCmd], {
+            stdio: 'ignore',
+            timeout: 3000
+        });
+        appendOpenLog(`open_linux_xterm status=${res.status ?? -1} signal=${res.signal ?? ''}`);
         if ((res.status ?? 1) === 0)
             return true;
     }
@@ -67,6 +109,7 @@ function openLinuxTerminal(sessionId, ownerTty) {
 function main() {
     const sessionId = process.argv[2] ?? 'current';
     const ownerTty = getCurrentTty();
+    appendOpenLog(`open_start pid=${process.pid} session=${sessionId} owner_tty=${ownerTty}`);
     const prune = closeActiveWatchWindows(BASE_DIR);
     console.log(stage('[watch-windows]'), `abertas antes=${prune.before} fechadas=${prune.closed.length} falhas=${prune.failed.length} restantes=${prune.remaining.length}`);
     if (prune.closed.length > 0) {
@@ -79,14 +122,22 @@ function main() {
             console.log(`  ${warn('!')} failed pid=${w.pid} session=${w.sessionId} launcher=${w.launcher} owner_tty=${w.ownerTty}`);
         }
     }
-    if (openInPowerShell(sessionId, ownerTty)) {
-        console.log(ok('Janela de watch solicitada no Windows PowerShell.'));
+    if (openInTmux(sessionId, ownerTty)) {
+        appendOpenLog('open_result launcher=tmux status=ok');
+        console.log(ok('Janela de watch aberta no tmux (WSL).'));
+        console.log(dim(`log: ${OPEN_LOG}`));
         return 0;
     }
-    if (openLinuxTerminal(sessionId, ownerTty))
+    if (openLinuxTerminal(sessionId, ownerTty)) {
+        appendOpenLog('open_result launcher=linux-terminal status=ok');
+        console.log(ok('Janela de watch aberta em terminal Linux (WSL).'));
+        console.log(dim(`log: ${OPEN_LOG}`));
         return 0;
+    }
+    appendOpenLog('open_result launcher=none status=fail');
     console.log(warn('Não consegui abrir nova janela automaticamente. Rode manualmente:'));
     console.log(shellJoin(['cd', BASE_DIR, '&&', process.execPath, `${BASE_DIR}/dist/codex-live-watch.js`, sessionId]));
+    console.log(dim(`log: ${OPEN_LOG}`));
     return 1;
 }
 process.exit(main());

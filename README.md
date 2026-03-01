@@ -72,6 +72,11 @@ codex-live tmux --watch both
 codex-live tmux --watch window
 ```
 
+Notas do `open`:
+- `codex-live open` abre no ambiente **WSL/tmux** (não usa PowerShell/Windows).
+- Requer cliente tmux ativo para abrir popup/janela.
+- Se não houver cliente tmux ativo, o comando falha com instrução manual.
+
 ## Estrutura
 
 - `src/`: TypeScript
