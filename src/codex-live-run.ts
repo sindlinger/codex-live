@@ -15,6 +15,15 @@ function appendLine(filePath: string, line: string): void {
   fs.appendFileSync(filePath, `${line}\n`, 'utf8');
 }
 
+function appendMultiline(filePath: string, prefix: string, value: string): void {
+  const normalized = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = normalized.split('\n');
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    appendLine(filePath, `${prefix} ${line}`);
+  }
+}
+
 function parseArgs(argv: string[]): { sessionId?: string; repoDir: string; cmd: string[] } {
   let sessionId: string | undefined;
   let repoDir = process.cwd();
@@ -60,6 +69,7 @@ async function main(): Promise<number> {
 
   const commandsLog = path.join(sessionDir, 'commands.log');
   const outputLog = path.join(sessionDir, 'output.log');
+  const timelineLog = path.join(sessionDir, 'timeline.log');
   const eventsLog = path.join(sessionDir, 'events.jsonl');
   const metaJson = path.join(sessionDir, 'meta.json');
 
@@ -76,6 +86,8 @@ async function main(): Promise<number> {
   const startLine = `[${startedAt}] ${cmdColor('$')} ${cmdPretty}`;
   console.log(startLine);
   appendLine(commandsLog, startLine);
+  appendLine(timelineLog, `[${startedAt}] [CMD] ${cmdPretty}`);
+  appendLine(timelineLog, `[${startedAt}] [INFO] repo=${repoDir}`);
   appendLine(eventsLog, JSON.stringify({ ts: startedAt, event: 'command_start', cmd: cmdPretty, repo: repoDir }));
 
   let code = 1;
@@ -100,16 +112,18 @@ async function main(): Promise<number> {
     code = direct.code;
     combined = direct.combined;
   }
+  const endedAt = nowIso();
   if (combined.length > 0) {
     fs.appendFileSync(outputLog, combined, 'utf8');
+    appendMultiline(timelineLog, `[${endedAt}] [OUT]`, combined);
   }
 
-  const endedAt = nowIso();
   const statusLabel = code === 0 ? 'ok' : 'fail';
   const endColor = code === 0 ? ok : fail;
   const endLine = `[${endedAt}] ${endColor(`exit=${code} (${statusLabel})`)} :: ${cmdPretty}`;
   console.log(endLine);
   appendLine(commandsLog, endLine);
+  appendLine(timelineLog, `[${endedAt}] [EXIT] code=${code} status=${statusLabel} :: ${cmdPretty}`);
   appendLine(eventsLog, JSON.stringify({ ts: endedAt, event: 'command_end', exit: code, status: statusLabel, cmd: cmdPretty }));
 
   console.log(stage('Sessão:'), file(sessionDir));

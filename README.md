@@ -98,3 +98,9 @@ npm run clean && npm run rebuild
   - horário de início do watch
   - horário de início da sessão
   - horário do último build
+
+### Logs da sessão
+
+- `commands.log`: comando e status de saída.
+- `output.log`: stdout/stderr bruto da execução.
+- `timeline.log`: visão consolidada (com prefixos `[CMD]`, `[INFO]`, `[OUT]`, `[EXIT]`) para leitura limpa no watch.
