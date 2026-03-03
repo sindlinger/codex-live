@@ -1,13 +1,13 @@
 export const colors = {
     reset: '\u001b[0m',
-    stage: '\u001b[1;34m',
-    dodgeBlue: '\u001b[38;5;39m',
-    cmd: '\u001b[1;32m',
-    ok: '\u001b[1;32m',
-    fail: '\u001b[1;31m',
-    warn: '\u001b[1;33m',
-    dim: '\u001b[0;37m',
-    file: '\u001b[1;34m'
+    stage: '\u001b[38;5;110m',
+    dodgeBlue: '\u001b[38;5;74m',
+    cmd: '\u001b[38;5;108m',
+    ok: '\u001b[38;5;108m',
+    fail: '\u001b[38;5;174m',
+    warn: '\u001b[38;5;180m',
+    dim: '\u001b[38;5;245m',
+    file: '\u001b[38;5;111m'
 };
 export function useColor() {
     return true;
