@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { baseDirFromImportMeta } from './lib/runtime.js';
+import { spawn } from 'node:child_process';
+import { baseDirFromImportMeta, nowCompactUtc } from './lib/runtime.js';
 import { loadConfig, saveConfig, resolveRepo, type LiveConfig } from './lib/config.js';
 import { resolveSessionId, formatSessions } from './lib/sessions.js';
-import { commandExists, runProcess } from './lib/proc.js';
-import { stage, dodgeBlue, ok, fail, file, dim } from './lib/colors.js';
+import { commandExists, execCapture, runProcess } from './lib/proc.js';
+import { stage, dodgeBlue, ok, fail, file, dim, warn } from './lib/colors.js';
 import { readBuildInfo } from './lib/build-info.js';
+import { listActiveWatchWindows } from './lib/watch-windows.js';
 
 const BASE_DIR = baseDirFromImportMeta(import.meta.url);
 const DIST_DIR = path.join(BASE_DIR, 'dist');
@@ -29,39 +31,50 @@ type ParsedOpts = {
   help?: boolean;
 };
 
+type ActiveCodexRow = {
+  pid: number;
+  startedAtMs: number;
+  startedText: string;
+  cmd: string;
+  sid: string;
+  mode: string;
+};
+
+type CodexSessionFile = {
+  id: string;
+  path: string;
+  mtimeMs: number;
+  size: number;
+};
+
 function usage(): void {
   console.log(`codex-live v${BUILD_INFO.version} (${BUILD_INFO.builtAtUtc})`);
-  console.log('Codex live session orchestrator.\n');
+  console.log('Codex live orchestrator.\n');
   console.log(`Usage: ${dodgeBlue('codex-live')} [OPTIONS] <COMMAND>\n`);
 
-  console.log('Commands:');
-  console.log(`  ${dodgeBlue('repo')}${dim('      Repositories (ls/add/use/rm)')}`);
-  console.log(`  ${dodgeBlue('session')}${dim('   Sessions (ls/use/show/clear)')}`);
-  console.log(`  ${dodgeBlue('flow')}${dim('      Extraction flow (run/quick)')}`);
-  console.log(`  ${dodgeBlue('exec')}${dim('      Execute any command with logging')}`);
-  console.log(`  ${dodgeBlue('codex')}${dim('     Run original codex with logging')}`);
-  console.log(`  ${dodgeBlue('watch')}${dim('     Follow current session logs')}`);
-  console.log(`  ${dodgeBlue('open')}${dim('      Open watcher in another terminal')}`);
-  console.log(`  ${dodgeBlue('popup')}${dim('     Open watcher in tmux popup')}`);
-  console.log(`  ${dodgeBlue('tmux')}${dim('      Open tmux workspace (codex + watch)')}`);
-  console.log(`  ${dodgeBlue('help')}${dim('      Show this help')}\n`);
+  console.log('Comandos estáveis:');
+  console.log(`  ${dodgeBlue('open')}${dim('      Abre o Codex interativo com logs no terminal atual')}`);
+  console.log(`  ${dodgeBlue('capture')}${dim('   Monitora sessões locais do Codex (sem nova execução)')}`);
+  console.log(`  ${dodgeBlue('session')}${dim('   Sessões (ls/active/attach/use/show/clear)')}`);
+  console.log(`  ${dodgeBlue('flow')}${dim('      Pipeline run/quick')}`);
+  console.log(`  ${dodgeBlue('exec')}${dim('      Executa comando com logging')}`);
+  console.log(`  ${dodgeBlue('help')}${dim('      Mostra esta ajuda')}\n`);
 
   console.log('Options:');
   console.log(`  --repo <REPO>${dim('       Repository name or path')}`);
   console.log(`  --session <SESSION>${dim(' Session id, number, or current')}`);
   console.log(`  -h, --help${dim('              Show help')}\n`);
 
-  console.log('Examples:');
-  console.log(`  ${dodgeBlue('codex-live flow run')}`);
+  console.log('Exemplos:');
+  console.log(`  ${dodgeBlue('codex-live open')}`);
+  console.log(`  ${dodgeBlue('codex-live capture')}`);
+  console.log(`  ${dodgeBlue('codex-live capture 2 --focus --behind --follow')}`);
+  console.log(`  ${dodgeBlue('codex-live session active --age auto')}`);
+  console.log(`  ${dodgeBlue('codex-live session attach 1')}`);
   console.log(`  ${dodgeBlue('codex-live flow quick :Q150 --probe')}`);
   console.log(`  ${dodgeBlue('codex-live exec -- git status')}`);
-  console.log(`  ${dodgeBlue('codex-live git status')}`);
-  console.log(`  ${dodgeBlue('codex-live ./run.exe 1-10 --inputs @M-DESP --inputs :Q22 --probe')}`);
-  console.log(`  ${dodgeBlue('codex-live codex -- --version')}`);
-  console.log(`  ${dodgeBlue('codex-live popup current --width 70% --height 55%')}`);
-  console.log(`  ${dodgeBlue('codex-live tmux --repo operpdf')}`);
-  console.log(`\n${dim('Unknown commands are executed as: codex-live exec -- <command> ...')}`);
-  console.log(`${dim('Use `codex-live <command> --help` for command-specific help.')}`);
+  console.log(`\n${dim('Use `codex-live <command> --help` para ajuda específica.')}`);
+  console.log(`${dim('Aliases: `start` -> `open`; legados continuam disponíveis por compatibilidade.')}`);
 }
 
 function parseOpts(args: string[]): { opts: ParsedOpts; rest: string[] } {
@@ -144,6 +157,419 @@ function parseSessionValue(value: string): string {
   return value;
 }
 
+function parsePsStartedToMs(started: string): number {
+  const ms = Date.parse(started);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function formatAge(msElapsed: number, unit: 'auto' | 's' | 'm' | 'h'): string {
+  const safe = Math.max(0, Math.floor(msElapsed / 1000));
+  if (unit === 's') return `${safe}s`;
+  if (unit === 'm') return `${Math.floor(safe / 60)}m`;
+  if (unit === 'h') return `${Math.floor(safe / 3600)}h`;
+
+  const d = Math.floor(safe / 86400);
+  const h = Math.floor((safe % 86400) / 3600);
+  const m = Math.floor((safe % 3600) / 60);
+  const s = safe % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function parseMinAgeSeconds(raw: string): number {
+  const m = raw.trim().match(/^(\d+)\s*([smhd])?$/i);
+  if (!m) throw new Error(`--min-age inválido: ${raw} (use ex.: 90s, 15m, 2h, 1d)`);
+  const n = Number(m[1]);
+  const u = (m[2] ?? 's').toLowerCase();
+  if (u === 's') return n;
+  if (u === 'm') return n * 60;
+  if (u === 'h') return n * 3600;
+  return n * 86400;
+}
+
+function listActiveCodexRows(): ActiveCodexRow[] {
+  const codexRaw = execCapture(
+    'bash',
+    ['-lc', "ps -eo pid=,lstart=,cmd= | sed -E 's/^[[:space:]]+//'"],
+    { stdio: ['ignore', 'pipe', 'ignore'] }
+  ).stdout;
+
+  const uuidRx = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+  return codexRaw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const m = line.match(/^(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+(.+)$/);
+      if (!m) return null;
+      const pid = Number(m[1]);
+      const startedText = m[2];
+      const startedAtMs = parsePsStartedToMs(startedText);
+      const cmd = m[3];
+      const isCodexCore = /\/codex\/codex(\s|$)/.test(cmd) || /^codex(\s|$)/.test(cmd);
+      if (!isCodexCore) return null;
+      const sid = cmd.match(uuidRx)?.[0] ?? '';
+      const mode = /\bresume\b/.test(cmd)
+        ? 'resume'
+        : /\bexec\b/.test(cmd)
+          ? 'exec'
+          : /\bfork\b/.test(cmd)
+            ? 'fork'
+            : 'interactive';
+      return { pid, startedAtMs, startedText, cmd, sid, mode };
+    })
+    .filter((x): x is ActiveCodexRow => x !== null)
+    .sort((a, b) => b.startedAtMs - a.startedAtMs);
+}
+
+function codexSessionsRoot(): string {
+  return path.join(process.env.HOME ?? '', '.codex', 'sessions');
+}
+
+function listJsonlFiles(root: string): string[] {
+  if (!root || !fs.existsSync(root)) return [];
+  const out: string[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        stack.push(full);
+      } else if (ent.isFile() && ent.name.endsWith('.jsonl')) {
+        out.push(full);
+      }
+    }
+  }
+  return out;
+}
+
+function extractSessionId(text: string): string {
+  const m = text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  return m ? m[0] : '';
+}
+
+function listCodexSessionFiles(): CodexSessionFile[] {
+  const root = codexSessionsRoot();
+  const files = listJsonlFiles(root);
+  return files
+    .map((p) => {
+      const st = fs.statSync(p);
+      const id = extractSessionId(path.basename(p));
+      return { id, path: p, mtimeMs: st.mtimeMs, size: st.size };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+function normalizeLineBreaks(s: string): string {
+  return s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function shortText(s: string, max = 180): string {
+  const one = normalizeLineBreaks(s).replace(/\s+/g, ' ').trim();
+  if (one.length <= max) return one;
+  return `${one.slice(0, max - 1)}…`;
+}
+
+function readMessageText(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    const p = part as Record<string, unknown>;
+    const t = typeof p.type === 'string' ? p.type : '';
+    if ((t === 'output_text' || t === 'input_text') && typeof p.text === 'string') return p.text;
+  }
+  return '';
+}
+
+function isFocusEvent(obj: Record<string, unknown>): boolean {
+  const type = String(obj.type ?? '');
+  if (/tool|call|message|response/i.test(type)) return true;
+  if (type === 'event_msg') {
+    const p = obj.payload as Record<string, unknown> | undefined;
+    const pt = String(p?.type ?? '');
+    if (/tool|call|message|response/i.test(pt)) return true;
+  }
+  if (type === 'response_item') {
+    const p = obj.payload as Record<string, unknown> | undefined;
+    const pt = String(p?.type ?? '');
+    if (/tool|call|message|response/i.test(pt)) return true;
+  }
+  return false;
+}
+
+function previewValue(v: unknown, max = 220): string {
+  try {
+    if (typeof v === 'string') return shortText(v, max);
+    return shortText(JSON.stringify(v), max);
+  } catch {
+    return shortText(String(v ?? ''), max);
+  }
+}
+
+function paintMaybe(value: string, painter: (s: string) => string, colorize: boolean): string {
+  return colorize ? painter(value) : value;
+}
+
+function renderSpyLine(
+  rawLine: string,
+  raw: boolean,
+  opts: { behind: boolean; colorize: boolean }
+): string | null {
+  if (raw) return rawLine;
+  const parsed = parseJsonLine(rawLine);
+  if (!parsed || typeof parsed !== 'object' || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+  const type = String(obj.type ?? '');
+  const ts = typeof obj.timestamp === 'string' ? obj.timestamp : '';
+  const behind = opts.behind;
+  const colorize = opts.colorize;
+  const tsPaint = (s: string) => paintMaybe(s, dim, colorize);
+  const tagBlue = (s: string) => paintMaybe(s, dodgeBlue, colorize);
+  const tagGreen = (s: string) => paintMaybe(s, ok, colorize);
+  const tagYellow = (s: string) => paintMaybe(s, warn, colorize);
+  const tagRed = (s: string) => paintMaybe(s, fail, colorize);
+  const line = (tag: string, msg = '') => `${tsPaint(ts)} ${tag}${msg ? ` ${msg}` : ''}`;
+
+  if (type === 'session_meta') {
+    const p = obj.payload as Record<string, unknown> | undefined;
+    const id = String(p?.id ?? '');
+    const cwd = String(p?.cwd ?? '');
+    const base = line(tagBlue('[session_meta]'), `id=${id} cwd=${cwd}`);
+    if (!behind) return base;
+    const cliVer = String(p?.cli_version ?? '');
+    const branch = String((p?.git as Record<string, unknown> | undefined)?.branch ?? '');
+    return `${base} ${tsPaint(`cli=${cliVer} branch=${branch}`)}`;
+  }
+
+  if (type === 'response_item') {
+    const p = obj.payload as Record<string, unknown> | undefined;
+    const ptype = String(p?.type ?? '');
+    if (ptype === 'message') {
+      const role = String(p?.role ?? 'unknown');
+      const txt = shortText(readMessageText(p?.content));
+      const tag = role === 'assistant' ? tagGreen('[message:assistant]') : tagYellow(`[message:${role}]`);
+      return line(tag, txt);
+    }
+    if (ptype === 'function_call') {
+      const name = String(p?.name ?? '');
+      const callId = String(p?.call_id ?? '');
+      const argsTxt = behind ? ` args=${previewValue(p?.arguments, 260)}` : '';
+      return line(tagBlue('[tool_call]'), `${name} call_id=${callId}${argsTxt}`);
+    }
+    if (ptype === 'function_call_output') {
+      const callId = String(p?.call_id ?? '');
+      const outTxt = behind ? ` output=${previewValue(p?.output, 260)}` : '';
+      return line(tagGreen('[tool_output]'), `call_id=${callId}${outTxt}`);
+    }
+    if (ptype === 'reasoning') {
+      if (!behind) return line(tagYellow('[reasoning]'));
+      const summary = previewValue((p?.summary as unknown) ?? '', 220);
+      return line(tagYellow('[reasoning]'), `summary=${summary}`);
+    }
+    return line(tagYellow(`[response_item:${ptype}]`));
+  }
+
+  if (type === 'event_msg') {
+    const p = obj.payload as Record<string, unknown> | undefined;
+    const ptype = String(p?.type ?? '');
+    if (ptype === 'agent_message') {
+      const msg = shortText(String(p?.message ?? ''));
+      return line(tagGreen('[agent_message]'), msg);
+    }
+    if (ptype === 'user_message') {
+      const msg = shortText(String(p?.message ?? ''));
+      return line(tagYellow('[user_message]'), msg);
+    }
+    if (ptype === 'agent_reasoning') {
+      const text = shortText(String(p?.text ?? ''));
+      return line(tagYellow('[agent_reasoning]'), behind ? text : '');
+    }
+    if (ptype === 'token_count') {
+      const info = p?.info as Record<string, unknown> | undefined;
+      const tot = info?.total_token_usage as Record<string, unknown> | undefined;
+      const inTok = tot?.input_tokens ?? '?';
+      const outTok = tot?.output_tokens ?? '?';
+      const total = tot?.total_tokens ?? '?';
+      if (!behind) return line(tagBlue('[token_count]'), `in=${inTok} out=${outTok} total=${total}`);
+      const cached = tot?.cached_input_tokens ?? '?';
+      const reason = tot?.reasoning_output_tokens ?? '?';
+      const rl = p?.rate_limits as Record<string, unknown> | undefined;
+      const primary = rl?.primary as Record<string, unknown> | undefined;
+      const usedPct = primary?.used_percent ?? '?';
+      return line(
+        tagBlue('[token_count]'),
+        `in=${inTok} cached=${cached} out=${outTok} reason=${reason} total=${total} primary_used=${usedPct}%`
+      );
+    }
+    if (ptype === 'error') {
+      return line(tagRed('[event:error]'), previewValue(p, 260));
+    }
+    return line(tagYellow(`[event:${ptype}]`), behind ? previewValue(p, 220) : '');
+  }
+
+  if (type === 'turn_context') {
+    const p = obj.payload as Record<string, unknown> | undefined;
+    const cwd = String(p?.cwd ?? '');
+    const model = String(p?.model ?? '');
+    if (!behind) return line(tagBlue('[turn_context]'), `model=${model} cwd=${cwd}`);
+    const approval = String(p?.approval_policy ?? '');
+    const effort = String(p?.effort ?? '');
+    return line(tagBlue('[turn_context]'), `model=${model} approval=${approval} effort=${effort} cwd=${cwd}`);
+  }
+
+  return line(tagYellow(`[${type}]`), behind ? previewValue(obj, 220) : '');
+}
+
+function resolveSpySession(target: string | undefined): CodexSessionFile {
+  const files = listCodexSessionFiles();
+  if (files.length === 0) {
+    throw new Error(`nenhuma sessão encontrada em ${codexSessionsRoot()}`);
+  }
+  if (!target || target === 'last') return files[0];
+
+  if (fs.existsSync(target) && fs.statSync(target).isFile()) {
+    const st = fs.statSync(target);
+    return {
+      id: extractSessionId(path.basename(target)),
+      path: target,
+      mtimeMs: st.mtimeMs,
+      size: st.size
+    };
+  }
+
+  if (/^\d+$/.test(target)) {
+    const idx = Number(target);
+    const active = listActiveCodexRows().filter((r) => r.sid);
+    if (idx >= 1 && idx <= active.length) {
+      const sid = active[idx - 1].sid;
+      const matches = files.filter((f) => f.id.toLowerCase() === sid.toLowerCase());
+      if (matches.length > 0) return matches[0];
+      throw new Error(`sessão ativa ${sid} encontrada no processo, mas arquivo jsonl não foi localizado`);
+    }
+    if (idx >= 1 && idx <= files.length) return files[idx - 1];
+    throw new Error(`índice inválido: ${target} (ativos=${active.length}, histórico=${files.length})`);
+  }
+
+  const sid = extractSessionId(target);
+  if (!sid) {
+    throw new Error(`alvo inválido: ${target} (use last, <número>, <session_id> ou caminho de .jsonl)`);
+  }
+  const matches = files.filter((f) => f.id.toLowerCase() === sid.toLowerCase());
+  if (matches.length === 0) throw new Error(`session_id não encontrado: ${sid}`);
+  return matches[0];
+}
+
+async function cmdSpy(args: string[]): Promise<number> {
+  let target = '';
+  let follow = false;
+  let focus = false;
+  let raw = false;
+  let behind = false;
+  let colorize = true;
+  let lines = 80;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '--help' || a === '-h' || a === 'help') {
+      console.log('uso: codex-live capture [last|<n>|<session_id>|<arquivo.jsonl>] [--focus] [--behind] [--follow] [--raw] [--no-color] [--lines N]');
+      console.log('exemplos:');
+      console.log('  codex-live capture');
+      console.log('  codex-live capture 2 --focus');
+      console.log('  codex-live capture 2 --focus --behind');
+      console.log('  codex-live capture 019cac6b-2dc1-78e1-a39b-e0b40970cb0a --follow');
+      console.log('  codex-live capture --raw --lines 30');
+      console.log('obs: modo passivo, sem nova chamada ao modelo (não consome tokens).');
+      return 0;
+    }
+    if (a === '--follow') { follow = true; continue; }
+    if (a === '--focus') { focus = true; continue; }
+    if (a === '--behind' || a === '--internals' || a === '--debug') { behind = true; continue; }
+    if (a === '--raw') { raw = true; continue; }
+    if (a === '--no-color') { colorize = false; continue; }
+    if (a === '--lines') {
+      lines = Number(args[i + 1] ?? '80');
+      if (!Number.isFinite(lines) || lines < 1) throw new Error(`--lines inválido: ${args[i + 1] ?? ''}`);
+      i += 1;
+      continue;
+    }
+    if (!target) {
+      target = a;
+      continue;
+    }
+    throw new Error(`argumento inesperado: ${a}`);
+  }
+
+  const chosen = resolveSpySession(target || 'last');
+  const when = new Date(chosen.mtimeMs).toISOString();
+  const paintStage = (s: string) => (colorize ? stage(s) : s);
+  const paintFile = (s: string) => (colorize ? file(s) : s);
+  const paintDim = (s: string) => (colorize ? dim(s) : s);
+  console.log(paintStage('Capture local:'));
+  console.log(`  session=${paintFile(chosen.id || '(sem-id)')} file=${paintFile(chosen.path)} modified=${paintDim(when)}`);
+
+  const content = fs.readFileSync(chosen.path, 'utf8');
+  const allLines = normalizeLineBreaks(content).split('\n').filter((x) => x.trim().length > 0);
+  const initial = allLines.slice(Math.max(0, allLines.length - lines));
+  for (const line of initial) {
+    const parsed = parseJsonLine(line);
+    if (focus && (!parsed || typeof parsed !== 'object' || parsed === null || !isFocusEvent(parsed as Record<string, unknown>))) continue;
+    const out = renderSpyLine(line, raw, { behind, colorize });
+    if (out) console.log(out);
+  }
+
+  if (!follow) return 0;
+
+  console.log(paintStage('Follow:'), paintDim('Ctrl+C para encerrar'));
+  const tail = spawn('tail', ['-n', '0', '-f', chosen.path], {
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let buf = '';
+  const flush = (chunk: string) => {
+    buf += chunk;
+    while (true) {
+      const nl = buf.indexOf('\n');
+      if (nl < 0) break;
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      const parsed = parseJsonLine(line);
+      if (focus && (!parsed || typeof parsed !== 'object' || parsed === null || !isFocusEvent(parsed as Record<string, unknown>))) continue;
+      const out = renderSpyLine(line, raw, { behind, colorize });
+      if (out) console.log(out);
+    }
+  };
+
+  tail.stdout?.setEncoding('utf8');
+  tail.stdout?.on('data', flush);
+  tail.stderr?.setEncoding('utf8');
+  tail.stderr?.on('data', (s) => process.stderr.write(s));
+
+  return await new Promise<number>((resolve) => {
+    const onSigint = () => {
+      try { tail.kill('SIGTERM'); } catch {}
+    };
+    process.on('SIGINT', onSigint);
+    tail.on('close', (code) => {
+      process.off('SIGINT', onSigint);
+      resolve(code ?? 0);
+    });
+    tail.on('error', () => {
+      process.off('SIGINT', onSigint);
+      resolve(1);
+    });
+  });
+}
+
 async function cmdRepo(subArgs: string[]): Promise<number> {
   const cfg = loadConfig(BASE_DIR);
   const [actionRaw, ...rest] = subArgs;
@@ -194,9 +620,27 @@ async function cmdRepo(subArgs: string[]): Promise<number> {
 }
 
 async function cmdSession(subArgs: string[]): Promise<number> {
+  const { opts, rest: subRest } = parseOpts(subArgs);
   const cfg = loadConfig(BASE_DIR);
-  const [actionRaw, ...rest] = subArgs;
+  const [actionRaw, ...rest] = subRest;
   const action = (actionRaw ?? 'ls').toLowerCase();
+
+  if (action === 'help' || opts.help) {
+    console.log('uso: codex-live session <ação> [args]');
+    console.log('ações:');
+    console.log('  ls                      lista sessões registradas');
+    console.log('  active [--age auto|s|m|h] [--min-age <dur>]  sessões ativas agora');
+    console.log('  attach <n|session_id> [--prompt "texto"]      entra na sessão codex ativa');
+    console.log('  show|current            mostra sessão padrão');
+    console.log('  use <id|número|current> define sessão padrão');
+    console.log('  clear                   limpa sessão padrão');
+    console.log('exemplos:');
+    console.log('  codex-live session active --age auto');
+    console.log('  codex-live session active --age m --min-age 10m');
+    console.log('  codex-live session attach 2');
+    console.log('  codex-live session attach 019cac6b-2dc1-78e1-a39b-e0b40970cb0a');
+    return 0;
+  }
 
   if (action === 'ls' || action === 'list') {
     const rows = formatSessions(BASE_DIR);
@@ -210,6 +654,126 @@ async function cmdSession(subArgs: string[]): Promise<number> {
       console.log(`  ${dim(String(r.n).padStart(3, ' '))}  ${file(r.id)}${mark}`);
     }
     return 0;
+  }
+
+  if (action === 'active' || action === 'open' || action === 'running') {
+    let ageUnit: 'auto' | 's' | 'm' | 'h' = 'auto';
+    let minAgeSec = 0;
+    for (let i = 0; i < rest.length; i += 1) {
+      const a = rest[i];
+      if (a === '--age') {
+        const v = (rest[i + 1] ?? '').toLowerCase();
+        if (v !== 'auto' && v !== 's' && v !== 'm' && v !== 'h') {
+          throw new Error(`--age inválido: ${v} (use auto|s|m|h)`);
+        }
+        ageUnit = v as 'auto' | 's' | 'm' | 'h';
+        i += 1;
+      } else if (a === '--min-age') {
+        minAgeSec = parseMinAgeSeconds(rest[i + 1] ?? '');
+        i += 1;
+      } else if (a.length > 0) {
+        throw new Error(`opção inválida para session active: ${a}`);
+      }
+    }
+
+    const active = listActiveWatchWindows(BASE_DIR);
+    console.log(stage('Sessões ativas agora:'));
+    if (active.length === 0) {
+      console.log('  (nenhuma janela watch ativa)');
+      console.log(dim('dica: use `codex-live open <session>` e depois `codex-live session active`'));
+    } else {
+      const grouped = new Map<string, typeof active>();
+      for (const row of active) {
+        const arr = grouped.get(row.sessionId) ?? [];
+        arr.push(row);
+        grouped.set(row.sessionId, arr);
+      }
+
+      const nowMs = Date.now();
+      const entries = [...grouped.entries()]
+        .map(([id, rows]) => ({
+          id,
+          rows,
+          latest: rows.reduce((max, r) => (r.startedAtUtc > max ? r.startedAtUtc : max), ''),
+          oldestMs: rows.reduce((min, r) => {
+            const ms = Date.parse(r.startedAtUtc);
+            return Number.isFinite(ms) && ms > 0 ? Math.min(min, ms) : min;
+          }, Number.MAX_SAFE_INTEGER)
+        }))
+        .filter((e) => {
+          if (minAgeSec <= 0) return true;
+          if (e.oldestMs === Number.MAX_SAFE_INTEGER) return false;
+          return (nowMs - e.oldestMs) / 1000 >= minAgeSec;
+        })
+        .sort((a, b) => b.latest.localeCompare(a.latest));
+
+      if (entries.length === 0) {
+        console.log('  (nenhuma janela watch ativa no filtro atual)');
+      }
+      for (let i = 0; i < entries.length; i += 1) {
+        const e = entries[i];
+        const mark = cfg.defaultSession === e.id ? ok(' [default]') : '';
+        const launchers = [...new Set(e.rows.map((r) => r.launcher))].join(',');
+        const age = e.oldestMs === Number.MAX_SAFE_INTEGER ? 'n/a' : formatAge(nowMs - e.oldestMs, ageUnit);
+        console.log(
+          `  ${dim(String(i + 1).padStart(3, ' '))}  ${file(e.id)}${mark} ${dim(`[watchers=${e.rows.length} launcher=${launchers} age=${age}]`)}`
+        );
+      }
+    }
+    const nowMs = Date.now();
+    const codexRows = listActiveCodexRows()
+      .filter((r) => minAgeSec <= 0 || (nowMs - r.startedAtMs) / 1000 >= minAgeSec);
+
+    console.log(stage('Codex original ativo:'));
+    if (codexRows.length === 0) {
+      console.log('  (nenhum processo codex ativo)');
+    } else {
+      for (let i = 0; i < codexRows.length; i += 1) {
+        const r = codexRows[i];
+        const sidLabel = r.sid ? ` session=${file(r.sid)}` : '';
+        const age = formatAge(nowMs - r.startedAtMs, ageUnit);
+        console.log(
+          `  ${dim(String(i + 1).padStart(3, ' '))} pid=${r.pid} mode=${r.mode}${sidLabel} ${dim(`[${r.startedText}] [age=${age}]`)}`
+        );
+      }
+      console.log(dim('dica: para entrar em uma sessão com id, use `codex resume <session_id>`'));
+    }
+
+    return 0;
+  }
+
+  if (action === 'attach' || action === 'enter') {
+    if (rest.length < 1) throw new Error('uso: codex-live session attach <n|session_id> [--prompt "texto"]');
+    const target = rest[0];
+    let prompt = '';
+    for (let i = 1; i < rest.length; i += 1) {
+      const a = rest[i];
+      if (a === '--prompt') {
+        prompt = rest[i + 1] ?? '';
+        i += 1;
+      } else {
+        prompt = [prompt, a].filter(Boolean).join(' ').trim();
+      }
+    }
+
+    const active = listActiveCodexRows();
+    let sid = target;
+    if (/^\d+$/.test(target)) {
+      const n = Number(target);
+      if (n < 1 || n > active.length) throw new Error(`índice inválido: ${target} (use 1..${active.length})`);
+      const row = active[n - 1];
+      if (!row.sid) {
+        throw new Error(`a entrada ${target} não tem session_id (pid=${row.pid}, mode=${row.mode})`);
+      }
+      sid = row.sid;
+    }
+
+    const repo = resolveRepo(BASE_DIR, cfg, opts.repo);
+    const callArgs: string[] = ['--repo', repo, '--', 'codex', 'resume', sid];
+    if (prompt) callArgs.push(prompt);
+    console.log(stage('Attach sessão codex:'));
+    console.log(`  repo=${file(repo)} session=${file(sid)} ${prompt ? `prompt=${dim(prompt)}` : ''}`);
+    return runInternal('codex-live-run.js', callArgs);
   }
 
   if (action === 'show' || action === 'current') {
@@ -387,6 +951,28 @@ async function cmdCodex(args: string[]): Promise<number> {
   return runInternal('codex-live-run.js', callArgs);
 }
 
+async function cmdStart(args: string[]): Promise<number> {
+  return cmdCodex(args);
+}
+
+function isJsonObjectLine(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.startsWith('{') && trimmed.endsWith('}');
+}
+
+function parseJsonLine(line: string): unknown | null {
+  if (!isJsonObjectLine(line)) return null;
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+async function cmdCapture(args: string[]): Promise<number> {
+  return cmdSpy(args);
+}
+
 async function main(): Promise<number> {
   const rawArgs = process.argv.slice(2);
 
@@ -419,18 +1005,22 @@ async function main(): Promise<number> {
 
   try {
     switch (cmdName) {
-      case 'repo': return cmdRepo(args);
-      case 'session': return cmdSession(args);
-      case 'exec': return cmdExec(args);
-      case 'flow': return cmdFlow(args);
-      case 'watch': return cmdMonitor('watch', args);
-      case 'open': return cmdMonitor('open', args);
-      case 'popup': return cmdMonitor('popup', args);
-      case 'tmux': return cmdMonitor('tmux', args);
-      case 'codex': return cmdCodex(args);
+      case 'repo': return await cmdRepo(args);
+      case 'session': return await cmdSession(args);
+      case 'exec': return await cmdExec(args);
+      case 'start': return await cmdStart(args);
+      case 'open': return await cmdStart(args);
+      case 'flow': return await cmdFlow(args);
+      case 'spy': return await cmdSpy(args);
+      case 'capture': return await cmdCapture(args);
+      case 'watch': return await cmdMonitor('watch', args);
+      case 'watch-open': return await cmdMonitor('open', args);
+      case 'popup': return await cmdMonitor('popup', args);
+      case 'tmux': return await cmdMonitor('tmux', args);
+      case 'codex': return await cmdCodex(args);
 
       default:
-        return cmdExec([...leadingGlobals, cmdNameRaw, ...rawArgs.slice(idx + 1)]);
+        return await cmdExec([...leadingGlobals, cmdNameRaw, ...rawArgs.slice(idx + 1)]);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -440,4 +1030,10 @@ async function main(): Promise<number> {
   }
 }
 
-main().then((code) => process.exit(code));
+main()
+  .then((code) => process.exit(code))
+  .catch((err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(fail(`erro: ${message}`));
+    process.exit(2);
+  });
