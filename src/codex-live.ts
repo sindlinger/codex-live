@@ -61,6 +61,27 @@ type SessionListEntry = {
 
 type SessionSortMode = 'newest' | 'oldest' | 'closest';
 
+type SessionQueryOptions = {
+  themeFilters: string[];
+  fromMs: number | null;
+  toMs: number | null;
+  aroundMs: number | null;
+  withinMs: number | null;
+  limit: number;
+  sortMode: SessionSortMode;
+};
+
+type SessionJsonRow = {
+  n: number;
+  id: string;
+  started_at: string | null;
+  age: string;
+  repo_dir: string | null;
+  repo_name: string | null;
+  theme: string;
+  dir_path: string;
+};
+
 function usage(): void {
   console.log(`codex-live v${BUILD_INFO.version} (${BUILD_INFO.builtAtUtc})`);
   console.log('Codex live orchestrator.\n');
@@ -425,6 +446,223 @@ function sessionEntries(baseDir: string): SessionListEntry[] {
       textIndex
     });
   }
+  return rows;
+}
+
+function buildSessionJsonRows(rows: SessionListEntry[]): SessionJsonRow[] {
+  const nowMs = Date.now();
+  return rows.map((r) => ({
+    n: r.n,
+    id: r.id,
+    started_at: r.startedIso || null,
+    age: r.startedAtMs > 0 ? formatAge(nowMs - r.startedAtMs, 'auto') : 'n/a',
+    repo_dir: r.repoDir || null,
+    repo_name: r.repoDir ? path.basename(r.repoDir) : null,
+    theme: r.theme,
+    dir_path: r.dirPath
+  }));
+}
+
+function csvEscape(value: string): string {
+  const s = String(value ?? '');
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function sessionRowsToCsv(rows: SessionJsonRow[]): string {
+  const header = ['n', 'id', 'started_at', 'age', 'repo_dir', 'repo_name', 'theme', 'dir_path'];
+  const lines = [header.join(',')];
+  for (const r of rows) {
+    lines.push([
+      String(r.n),
+      r.id,
+      r.started_at ?? '',
+      r.age,
+      r.repo_dir ?? '',
+      r.repo_name ?? '',
+      r.theme,
+      r.dir_path
+    ].map(csvEscape).join(','));
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function parseSessionQueryOptions(
+  rest: string[],
+  baseDir: string,
+  mode: 'ls' | 'export'
+): { query: SessionQueryOptions; jsonOut: boolean; outPath: string; stdoutCsv: boolean } {
+  const query: SessionQueryOptions = {
+    themeFilters: [],
+    fromMs: null,
+    toMs: null,
+    aroundMs: null,
+    withinMs: null,
+    limit: 0,
+    sortMode: 'newest'
+  };
+
+  let jsonOut = false;
+  let outPath = '';
+  let stdoutCsv = false;
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const a = rest[i];
+    if (a === '--json') {
+      if (mode !== 'ls') throw new Error('--json só é válido em `session ls`');
+      jsonOut = true;
+      continue;
+    }
+    if (a === '--out' || a === '--csv' || a === '--output') {
+      if (mode !== 'export') throw new Error(`${a} só é válido em \`session export\``);
+      const v = String(rest[i + 1] ?? '').trim();
+      if (!v) throw new Error(`${a} requer caminho de arquivo`);
+      outPath = v;
+      i += 1;
+      continue;
+    }
+    if (a === '--stdout') {
+      if (mode !== 'export') throw new Error('--stdout só é válido em `session export`');
+      stdoutCsv = true;
+      continue;
+    }
+    if (a === '--theme' || a === '--query' || a === '--q') {
+      const v = String(rest[i + 1] ?? '').trim();
+      if (!v) throw new Error(`${a} requer valor`);
+      query.themeFilters.push(v.toLowerCase());
+      i += 1;
+      continue;
+    }
+    if (a === '--from') {
+      query.fromMs = parseDateInputToMs(String(rest[i + 1] ?? ''));
+      i += 1;
+      continue;
+    }
+    if (a === '--to') {
+      query.toMs = parseDateInputToMs(String(rest[i + 1] ?? ''));
+      i += 1;
+      continue;
+    }
+    if (a === '--since') {
+      const ms = parseDurationToMs(String(rest[i + 1] ?? ''));
+      query.fromMs = Date.now() - ms;
+      i += 1;
+      continue;
+    }
+    if (a === '--hours') {
+      const n = Number(rest[i + 1] ?? '');
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`--hours inválido: ${rest[i + 1] ?? ''}`);
+      query.fromMs = Date.now() - n * 3600 * 1000;
+      i += 1;
+      continue;
+    }
+    if (a === '--days') {
+      const n = Number(rest[i + 1] ?? '');
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`--days inválido: ${rest[i + 1] ?? ''}`);
+      query.fromMs = Date.now() - n * 86400 * 1000;
+      i += 1;
+      continue;
+    }
+    if (a === '--weeks') {
+      const n = Number(rest[i + 1] ?? '');
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`--weeks inválido: ${rest[i + 1] ?? ''}`);
+      query.fromMs = Date.now() - n * 7 * 86400 * 1000;
+      i += 1;
+      continue;
+    }
+    if (a === '--months') {
+      const n = Number(rest[i + 1] ?? '');
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`--months inválido: ${rest[i + 1] ?? ''}`);
+      query.fromMs = Date.now() - n * 30 * 86400 * 1000;
+      i += 1;
+      continue;
+    }
+    if (a === '--around') {
+      const v = String(rest[i + 1] ?? '').trim();
+      if (!v) throw new Error('--around requer valor');
+      if (v.toLowerCase() === 'now') {
+        query.aroundMs = Date.now();
+      } else if (/^\d+$/.test(v)) {
+        const rows = sessionEntries(baseDir);
+        const idx = Number(v);
+        if (idx < 1 || idx > rows.length) throw new Error(`--around índice inválido: ${v}`);
+        query.aroundMs = rows[idx - 1].startedAtMs;
+      } else {
+        const rows = sessionEntries(baseDir);
+        const exact = rows.find((r) => r.id.toLowerCase() === v.toLowerCase());
+        query.aroundMs = exact ? exact.startedAtMs : parseDateInputToMs(v);
+      }
+      i += 1;
+      continue;
+    }
+    if (a === '--within') {
+      query.withinMs = parseDurationToMs(String(rest[i + 1] ?? ''));
+      i += 1;
+      continue;
+    }
+    if (a === '--limit') {
+      const n = Number(rest[i + 1] ?? '');
+      if (!Number.isFinite(n) || n < 1) throw new Error(`--limit inválido: ${rest[i + 1] ?? ''}`);
+      query.limit = Math.floor(n);
+      i += 1;
+      continue;
+    }
+    if (a === '--sort') {
+      const v = String(rest[i + 1] ?? '').trim().toLowerCase();
+      if (v !== 'newest' && v !== 'oldest' && v !== 'closest') {
+        throw new Error(`--sort inválido: ${v} (use newest|oldest|closest)`);
+      }
+      query.sortMode = v as SessionSortMode;
+      i += 1;
+      continue;
+    }
+    if (a.length > 0) {
+      throw new Error(`opção inválida para session ${mode}: ${a}`);
+    }
+  }
+
+  if (query.withinMs !== null && query.aroundMs === null) {
+    throw new Error('--within exige --around');
+  }
+  if (query.fromMs !== null && query.toMs !== null && query.fromMs > query.toMs) {
+    throw new Error('--from não pode ser maior que --to');
+  }
+
+  if (mode === 'export' && !stdoutCsv && !outPath) {
+    outPath = path.join(baseDir, 'sessions', `export_${nowCompactUtc()}.csv`);
+  }
+
+  return { query, jsonOut, outPath, stdoutCsv };
+}
+
+function querySessionRows(baseDir: string, query: SessionQueryOptions): SessionListEntry[] {
+  let rows = sessionEntries(baseDir);
+
+  if (query.themeFilters.length > 0) {
+    rows = rows.filter((r) => query.themeFilters.every((t) => r.textIndex.includes(t)));
+  }
+  const fromMs = query.fromMs;
+  const toMs = query.toMs;
+  if (fromMs !== null) rows = rows.filter((r) => r.startedAtMs >= fromMs);
+  if (toMs !== null) rows = rows.filter((r) => r.startedAtMs <= toMs);
+
+  if (query.aroundMs !== null || query.sortMode === 'closest') {
+    const centerMs = query.aroundMs ?? Date.now();
+    rows = rows
+      .map((r) => ({ ...r, _distanceMs: Math.abs(r.startedAtMs - centerMs) }))
+      .filter((r) => query.withinMs === null || r._distanceMs <= query.withinMs)
+      .sort((a, b) => a._distanceMs - b._distanceMs)
+      .map(({ _distanceMs, ...restRow }) => restRow);
+  } else {
+    rows = rows.sort((a, b) => {
+      if (query.sortMode === 'oldest') return a.startedAtMs - b.startedAtMs || a.id.localeCompare(b.id);
+      return b.startedAtMs - a.startedAtMs || b.id.localeCompare(a.id);
+    });
+  }
+
+  if (query.limit > 0) rows = rows.slice(0, query.limit);
   return rows;
 }
 
@@ -800,6 +1038,7 @@ async function cmdSession(subArgs: string[]): Promise<number> {
     console.log('uso: codex-live session <ação> [args]');
     console.log('ações:');
     console.log('  ls [filtros]            lista sessões registradas');
+    console.log('  export|csv [filtros] [--out arquivo.csv] [--stdout]  exporta CSV');
     console.log('  active [--age auto|s|m|h] [--min-age <dur>]  sessões ativas agora');
     console.log('  attach <n|session_id> [--prompt "texto"]      entra na sessão codex ativa');
     console.log('  show|current            mostra sessão padrão');
@@ -821,6 +1060,8 @@ async function cmdSession(subArgs: string[]): Promise<number> {
     console.log('  codex-live session ls --around now --within 6h');
     console.log('  codex-live sessions --sort oldest --limit 20');
     console.log('  codex-live sessions --theme certidao --weeks 4 --json');
+    console.log('  codex-live sessions export --theme despacho --weeks 1 --out /tmp/sessoes.csv');
+    console.log('  codex-live sessions csv --theme certidao --since 30d');
     console.log('  codex-live session active --age auto');
     console.log('  codex-live session active --age m --min-age 10m');
     console.log('  codex-live session attach 2');
@@ -829,170 +1070,21 @@ async function cmdSession(subArgs: string[]): Promise<number> {
   }
 
   if (action === 'ls' || action === 'list') {
-    const themeFilters: string[] = [];
-    let fromMs: number | null = null;
-    let toMs: number | null = null;
-    let aroundMs: number | null = null;
-    let withinMs: number | null = null;
-    let limit = 0;
-    let sortMode: SessionSortMode = 'newest';
-    let jsonOut = false;
+    const parsed = parseSessionQueryOptions(rest, BASE_DIR, 'ls');
+    const rows = querySessionRows(BASE_DIR, parsed.query);
+    const jsonRows = buildSessionJsonRows(rows);
 
-    for (let i = 0; i < rest.length; i += 1) {
-      const a = rest[i];
-      if (a === '--json') {
-        jsonOut = true;
-        continue;
-      }
-      if (a === '--theme' || a === '--query' || a === '--q') {
-        const v = String(rest[i + 1] ?? '').trim();
-        if (!v) throw new Error(`${a} requer valor`);
-        themeFilters.push(v.toLowerCase());
-        i += 1;
-        continue;
-      }
-      if (a === '--from') {
-        fromMs = parseDateInputToMs(String(rest[i + 1] ?? ''));
-        i += 1;
-        continue;
-      }
-      if (a === '--to') {
-        toMs = parseDateInputToMs(String(rest[i + 1] ?? ''));
-        i += 1;
-        continue;
-      }
-      if (a === '--since') {
-        const ms = parseDurationToMs(String(rest[i + 1] ?? ''));
-        fromMs = Date.now() - ms;
-        i += 1;
-        continue;
-      }
-      if (a === '--hours') {
-        const n = Number(rest[i + 1] ?? '');
-        if (!Number.isFinite(n) || n <= 0) throw new Error(`--hours inválido: ${rest[i + 1] ?? ''}`);
-        fromMs = Date.now() - n * 3600 * 1000;
-        i += 1;
-        continue;
-      }
-      if (a === '--days') {
-        const n = Number(rest[i + 1] ?? '');
-        if (!Number.isFinite(n) || n <= 0) throw new Error(`--days inválido: ${rest[i + 1] ?? ''}`);
-        fromMs = Date.now() - n * 86400 * 1000;
-        i += 1;
-        continue;
-      }
-      if (a === '--weeks') {
-        const n = Number(rest[i + 1] ?? '');
-        if (!Number.isFinite(n) || n <= 0) throw new Error(`--weeks inválido: ${rest[i + 1] ?? ''}`);
-        fromMs = Date.now() - n * 7 * 86400 * 1000;
-        i += 1;
-        continue;
-      }
-      if (a === '--months') {
-        const n = Number(rest[i + 1] ?? '');
-        if (!Number.isFinite(n) || n <= 0) throw new Error(`--months inválido: ${rest[i + 1] ?? ''}`);
-        fromMs = Date.now() - n * 30 * 86400 * 1000;
-        i += 1;
-        continue;
-      }
-      if (a === '--around') {
-        const v = String(rest[i + 1] ?? '').trim();
-        if (!v) throw new Error('--around requer valor');
-        if (v.toLowerCase() === 'now') {
-          aroundMs = Date.now();
-        } else if (/^\d+$/.test(v)) {
-          const rows = sessionEntries(BASE_DIR);
-          const idx = Number(v);
-          if (idx < 1 || idx > rows.length) throw new Error(`--around índice inválido: ${v}`);
-          aroundMs = rows[idx - 1].startedAtMs;
-        } else {
-          const rows = sessionEntries(BASE_DIR);
-          const exact = rows.find((r) => r.id.toLowerCase() === v.toLowerCase());
-          aroundMs = exact ? exact.startedAtMs : parseDateInputToMs(v);
-        }
-        i += 1;
-        continue;
-      }
-      if (a === '--within') {
-        withinMs = parseDurationToMs(String(rest[i + 1] ?? ''));
-        i += 1;
-        continue;
-      }
-      if (a === '--limit') {
-        const n = Number(rest[i + 1] ?? '');
-        if (!Number.isFinite(n) || n < 1) throw new Error(`--limit inválido: ${rest[i + 1] ?? ''}`);
-        limit = Math.floor(n);
-        i += 1;
-        continue;
-      }
-      if (a === '--sort') {
-        const v = String(rest[i + 1] ?? '').trim().toLowerCase();
-        if (v !== 'newest' && v !== 'oldest' && v !== 'closest') {
-          throw new Error(`--sort inválido: ${v} (use newest|oldest|closest)`);
-        }
-        sortMode = v as SessionSortMode;
-        i += 1;
-        continue;
-      }
-      if (a.length > 0) {
-        throw new Error(`opção inválida para session ls: ${a}`);
-      }
-    }
-
-    if (withinMs !== null && aroundMs === null) {
-      throw new Error('--within exige --around');
-    }
-    if (fromMs !== null && toMs !== null && fromMs > toMs) {
-      throw new Error('--from não pode ser maior que --to');
-    }
-
-    let rows = sessionEntries(BASE_DIR);
-
-    if (themeFilters.length > 0) {
-      rows = rows.filter((r) => themeFilters.every((t) => r.textIndex.includes(t)));
-    }
-    if (fromMs !== null) rows = rows.filter((r) => r.startedAtMs >= fromMs);
-    if (toMs !== null) rows = rows.filter((r) => r.startedAtMs <= toMs);
-
-    if (aroundMs !== null || sortMode === 'closest') {
-      const centerMs = aroundMs ?? Date.now();
-      rows = rows
-        .map((r) => ({ ...r, _distanceMs: Math.abs(r.startedAtMs - centerMs) }))
-        .filter((r) => withinMs === null || r._distanceMs <= withinMs)
-        .sort((a, b) => a._distanceMs - b._distanceMs)
-        .map(({ _distanceMs, ...restRow }) => restRow);
-    } else {
-      rows = rows.sort((a, b) => {
-        if (sortMode === 'oldest') return a.startedAtMs - b.startedAtMs || a.id.localeCompare(b.id);
-        return b.startedAtMs - a.startedAtMs || b.id.localeCompare(a.id);
-      });
-    }
-
-    if (limit > 0) rows = rows.slice(0, limit);
-
-    const nowMs = Date.now();
-    const jsonRows = rows.map((r) => ({
-      n: r.n,
-      id: r.id,
-      started_at: r.startedIso || null,
-      age: r.startedAtMs > 0 ? formatAge(nowMs - r.startedAtMs, 'auto') : 'n/a',
-      repo_dir: r.repoDir || null,
-      repo_name: r.repoDir ? path.basename(r.repoDir) : null,
-      theme: r.theme,
-      dir_path: r.dirPath
-    }));
-
-    if (jsonOut) {
+    if (parsed.jsonOut) {
       console.log(JSON.stringify({
         count: jsonRows.length,
         filters: {
-          theme: themeFilters,
-          from: fromMs !== null ? new Date(fromMs).toISOString() : null,
-          to: toMs !== null ? new Date(toMs).toISOString() : null,
-          around: aroundMs !== null ? new Date(aroundMs).toISOString() : null,
-          within_ms: withinMs,
-          sort: sortMode,
-          limit: limit || null
+          theme: parsed.query.themeFilters,
+          from: parsed.query.fromMs !== null ? new Date(parsed.query.fromMs).toISOString() : null,
+          to: parsed.query.toMs !== null ? new Date(parsed.query.toMs).toISOString() : null,
+          around: parsed.query.aroundMs !== null ? new Date(parsed.query.aroundMs).toISOString() : null,
+          within_ms: parsed.query.withinMs,
+          sort: parsed.query.sortMode,
+          limit: parsed.query.limit || null
         },
         sessions: jsonRows
       }, null, 2));
@@ -1004,6 +1096,7 @@ async function cmdSession(subArgs: string[]): Promise<number> {
       console.log('  (nenhuma)');
       return 0;
     }
+    const nowMs = Date.now();
     for (const r of rows) {
       const mark = cfg.defaultSession === r.id ? ok(' [default]') : '';
       const repoName = r.repoDir ? path.basename(r.repoDir) : '-';
@@ -1012,6 +1105,26 @@ async function cmdSession(subArgs: string[]): Promise<number> {
       console.log(`  ${dim(String(r.n).padStart(3, ' '))}  ${file(r.id)}${mark} ${dim(`[${when}] [age=${age}] [repo=${repoName}]`)}`);
       console.log(`       ${dim('tema:')} ${r.theme}`);
     }
+    return 0;
+  }
+
+  if (action === 'export' || action === 'csv') {
+    const parsed = parseSessionQueryOptions(rest, BASE_DIR, 'export');
+    const rows = querySessionRows(BASE_DIR, parsed.query);
+    const jsonRows = buildSessionJsonRows(rows);
+    const csvText = sessionRowsToCsv(jsonRows);
+
+    if (parsed.stdoutCsv) {
+      process.stdout.write(csvText);
+      return 0;
+    }
+
+    const outDir = path.dirname(parsed.outPath);
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(parsed.outPath, csvText, 'utf8');
+    console.log(stage('Sessões exportadas (CSV):'));
+    console.log(`  file=${file(parsed.outPath)} rows=${jsonRows.length}`);
+    console.log(`  filtros: theme=${parsed.query.themeFilters.join('|') || '-'} sort=${parsed.query.sortMode}`);
     return 0;
   }
 
@@ -1366,7 +1479,17 @@ async function main(): Promise<number> {
     switch (cmdName) {
       case 'repo': return await cmdRepo(args);
       case 'session': return await cmdSession(args);
-      case 'sessions': return await cmdSession(['ls', ...args]);
+      case 'sessions': {
+        const first = (args[0] ?? '').toLowerCase();
+        const explicitAction = new Set([
+          'ls', 'list', 'active', 'open', 'running', 'attach', 'enter',
+          'show', 'current', 'use', 'clear', 'help', 'export', 'csv'
+        ]);
+        if (first && !first.startsWith('-') && explicitAction.has(first)) {
+          return await cmdSession(args);
+        }
+        return await cmdSession(['ls', ...args]);
+      }
       case 'exec': return await cmdExec(args);
       case 'start': return await cmdStart(args);
       case 'open': return await cmdStart(args);
