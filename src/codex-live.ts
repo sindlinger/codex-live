@@ -47,6 +47,20 @@ type CodexSessionFile = {
   size: number;
 };
 
+type SessionListEntry = {
+  n: number;
+  id: string;
+  dirPath: string;
+  startedAtMs: number;
+  updatedAtMs: number;
+  startedIso: string;
+  repoDir: string;
+  theme: string;
+  textIndex: string;
+};
+
+type SessionSortMode = 'newest' | 'oldest' | 'closest';
+
 function usage(): void {
   console.log(`codex-live v${BUILD_INFO.version} (${BUILD_INFO.builtAtUtc})`);
   console.log('Codex live orchestrator.\n');
@@ -56,6 +70,7 @@ function usage(): void {
   console.log(`  ${dodgeBlue('open')}${dim('      Abre o Codex interativo com logs no terminal atual')}`);
   console.log(`  ${dodgeBlue('capture')}${dim('   Monitora sessões locais do Codex (sem nova execução)')}`);
   console.log(`  ${dodgeBlue('session')}${dim('   Sessões (ls/active/attach/use/show/clear)')}`);
+  console.log(`  ${dodgeBlue('sessions')}${dim('  Alias de `session ls` com filtros')}`);
   console.log(`  ${dodgeBlue('flow')}${dim('      Pipeline run/quick')}`);
   console.log(`  ${dodgeBlue('exec')}${dim('      Executa comando com logging')}`);
   console.log(`  ${dodgeBlue('help')}${dim('      Mostra esta ajuda')}\n`);
@@ -255,6 +270,162 @@ function listJsonlFiles(root: string): string[] {
 function extractSessionId(text: string): string {
   const m = text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
   return m ? m[0] : '';
+}
+
+function safeReadJsonObject(filePath: string): Record<string, unknown> {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+function parseSessionIdStartedMs(sessionId: string): number {
+  const m = sessionId.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/);
+  if (!m) return 0;
+  const yyyy = Number(m[1]);
+  const mm = Number(m[2]);
+  const dd = Number(m[3]);
+  const hh = Number(m[4]);
+  const mi = Number(m[5]);
+  const ss = Number(m[6]);
+  const ms = Date.UTC(yyyy, mm - 1, dd, hh, mi, ss, 0);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function readFirstCommandFromCommandsLog(commandsPath: string): string {
+  if (!fs.existsSync(commandsPath)) return '';
+  try {
+    const fd = fs.openSync(commandsPath, 'r');
+    const chunkSize = 64 * 1024;
+    const buf = Buffer.allocUnsafe(chunkSize);
+    const readBytes = fs.readSync(fd, buf, 0, chunkSize, 0);
+    fs.closeSync(fd);
+    if (readBytes <= 0) return '';
+    const head = buf.subarray(0, readBytes).toString('utf8');
+    const lines = normalizeLineBreaks(head).split('\n');
+    for (const line of lines) {
+      const m = line.match(/\]\s+\$\s+(.+)$/);
+      if (m && m[1]) return m[1].trim();
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
+function readFirstCommandFromEvents(eventsPath: string): string {
+  if (!fs.existsSync(eventsPath)) return '';
+  try {
+    const fd = fs.openSync(eventsPath, 'r');
+    const chunkSize = 96 * 1024;
+    const buf = Buffer.allocUnsafe(chunkSize);
+    const readBytes = fs.readSync(fd, buf, 0, chunkSize, 0);
+    fs.closeSync(fd);
+    if (readBytes <= 0) return '';
+    const head = buf.subarray(0, readBytes).toString('utf8');
+    const lines = normalizeLineBreaks(head).split('\n');
+    for (const line of lines) {
+      const parsed = parseJsonLine(line);
+      if (!parsed || typeof parsed !== 'object' || parsed === null) continue;
+      const obj = parsed as Record<string, unknown>;
+      const event = String(obj.event ?? '');
+      if (event !== 'command_start') continue;
+      const cmd = String(obj.cmd ?? '').trim();
+      if (cmd.length > 0) return cmd;
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+}
+
+function parseDateInputToMs(raw: string): number {
+  const value = raw.trim();
+  if (!value) throw new Error('valor de data/hora vazio');
+  if (value.toLowerCase() === 'now') return Date.now();
+  if (/^\d{10,13}$/.test(value)) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) throw new Error(`data/hora inválida: ${raw}`);
+    return value.length === 10 ? n * 1000 : n;
+  }
+  const isoMs = Date.parse(value);
+  if (Number.isFinite(isoMs)) return isoMs;
+  throw new Error(`data/hora inválida: ${raw} (use ISO, YYYY-MM-DD, epoch, ou "now")`);
+}
+
+function parseDurationToMs(raw: string): number {
+  const value = raw.trim().toLowerCase();
+  const m = value.match(/^(\d+)\s*(s|m|h|d|w|mo|mes|meses|month|months)?$/);
+  if (!m) {
+    throw new Error(`duração inválida: ${raw} (ex.: 3h, 2d, 1w, 2mo)`);
+  }
+  const n = Number(m[1]);
+  const unit = m[2] ?? 's';
+  if (unit === 's') return n * 1000;
+  if (unit === 'm') return n * 60 * 1000;
+  if (unit === 'h') return n * 3600 * 1000;
+  if (unit === 'd') return n * 86400 * 1000;
+  if (unit === 'w') return n * 7 * 86400 * 1000;
+  return n * 30 * 86400 * 1000;
+}
+
+function sessionEntries(baseDir: string): SessionListEntry[] {
+  const dir = path.join(baseDir, 'sessions');
+  if (!fs.existsSync(dir)) return [];
+  const ids = fs
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .filter((name) => name !== 'current')
+    .sort((a, b) => b.localeCompare(a));
+
+  const rows: SessionListEntry[] = [];
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    const dirPath = path.join(dir, id);
+    let updatedAtMs = 0;
+    try {
+      updatedAtMs = fs.statSync(dirPath).mtimeMs;
+    } catch {
+      updatedAtMs = 0;
+    }
+
+    const metaPath = path.join(dirPath, 'meta.json');
+    const meta = safeReadJsonObject(metaPath);
+    const repoDir = String(meta.repo_dir ?? '');
+    const startedMeta = String(meta.started_at ?? '');
+    const startedMetaMs = startedMeta ? Date.parse(startedMeta) : NaN;
+    const startedFromIdMs = parseSessionIdStartedMs(id);
+    const startedAtMs = Number.isFinite(startedMetaMs) && startedMetaMs > 0
+      ? startedMetaMs
+      : (startedFromIdMs > 0 ? startedFromIdMs : updatedAtMs);
+    const startedIso = startedAtMs > 0 ? new Date(startedAtMs).toISOString() : '';
+
+    const cmdFromLog = readFirstCommandFromCommandsLog(path.join(dirPath, 'commands.log'));
+    const cmdFromEvents = readFirstCommandFromEvents(path.join(dirPath, 'events.jsonl'));
+    const rawTheme = String(meta.title ?? meta.topic ?? meta.prompt ?? '').trim();
+    const theme = shortText(rawTheme || cmdFromLog || cmdFromEvents || '(sem tema)', 120);
+    const textIndex = `${id} ${repoDir} ${theme} ${cmdFromLog} ${cmdFromEvents}`.toLowerCase();
+
+    rows.push({
+      n: i + 1,
+      id,
+      dirPath,
+      startedAtMs,
+      updatedAtMs,
+      startedIso,
+      repoDir,
+      theme,
+      textIndex
+    });
+  }
+  return rows;
 }
 
 function listCodexSessionFiles(): CodexSessionFile[] {
@@ -628,13 +799,28 @@ async function cmdSession(subArgs: string[]): Promise<number> {
   if (action === 'help' || opts.help) {
     console.log('uso: codex-live session <ação> [args]');
     console.log('ações:');
-    console.log('  ls                      lista sessões registradas');
+    console.log('  ls [filtros]            lista sessões registradas');
     console.log('  active [--age auto|s|m|h] [--min-age <dur>]  sessões ativas agora');
     console.log('  attach <n|session_id> [--prompt "texto"]      entra na sessão codex ativa');
     console.log('  show|current            mostra sessão padrão');
     console.log('  use <id|número|current> define sessão padrão');
     console.log('  clear                   limpa sessão padrão');
+    console.log('filtros do ls:');
+    console.log('  --theme <texto>         filtra por tema/comando/repo (pode repetir)');
+    console.log('  --from <data>           início do intervalo (ISO, YYYY-MM-DD, epoch)');
+    console.log('  --to <data>             fim do intervalo');
+    console.log('  --since <dur>           últimas N unidades (ex.: 6h, 3d, 2w, 1mo)');
+    console.log('  --hours|--days|--weeks|--months <n>  atalhos de tempo');
+    console.log('  --around <data|now|id|n> --within <dur>       proximidade temporal');
+    console.log('  --sort <newest|oldest|closest>                ordenação');
+    console.log('  --json                  saída JSON');
+    console.log('  --limit <n>             limita resultado');
     console.log('exemplos:');
+    console.log('  codex-live sessions --theme despacho --weeks 2');
+    console.log('  codex-live session ls --from 2026-03-01 --to 2026-03-07');
+    console.log('  codex-live session ls --around now --within 6h');
+    console.log('  codex-live sessions --sort oldest --limit 20');
+    console.log('  codex-live sessions --theme certidao --weeks 4 --json');
     console.log('  codex-live session active --age auto');
     console.log('  codex-live session active --age m --min-age 10m');
     console.log('  codex-live session attach 2');
@@ -643,7 +829,176 @@ async function cmdSession(subArgs: string[]): Promise<number> {
   }
 
   if (action === 'ls' || action === 'list') {
-    const rows = formatSessions(BASE_DIR);
+    const themeFilters: string[] = [];
+    let fromMs: number | null = null;
+    let toMs: number | null = null;
+    let aroundMs: number | null = null;
+    let withinMs: number | null = null;
+    let limit = 0;
+    let sortMode: SessionSortMode = 'newest';
+    let jsonOut = false;
+
+    for (let i = 0; i < rest.length; i += 1) {
+      const a = rest[i];
+      if (a === '--json') {
+        jsonOut = true;
+        continue;
+      }
+      if (a === '--theme' || a === '--query' || a === '--q') {
+        const v = String(rest[i + 1] ?? '').trim();
+        if (!v) throw new Error(`${a} requer valor`);
+        themeFilters.push(v.toLowerCase());
+        i += 1;
+        continue;
+      }
+      if (a === '--from') {
+        fromMs = parseDateInputToMs(String(rest[i + 1] ?? ''));
+        i += 1;
+        continue;
+      }
+      if (a === '--to') {
+        toMs = parseDateInputToMs(String(rest[i + 1] ?? ''));
+        i += 1;
+        continue;
+      }
+      if (a === '--since') {
+        const ms = parseDurationToMs(String(rest[i + 1] ?? ''));
+        fromMs = Date.now() - ms;
+        i += 1;
+        continue;
+      }
+      if (a === '--hours') {
+        const n = Number(rest[i + 1] ?? '');
+        if (!Number.isFinite(n) || n <= 0) throw new Error(`--hours inválido: ${rest[i + 1] ?? ''}`);
+        fromMs = Date.now() - n * 3600 * 1000;
+        i += 1;
+        continue;
+      }
+      if (a === '--days') {
+        const n = Number(rest[i + 1] ?? '');
+        if (!Number.isFinite(n) || n <= 0) throw new Error(`--days inválido: ${rest[i + 1] ?? ''}`);
+        fromMs = Date.now() - n * 86400 * 1000;
+        i += 1;
+        continue;
+      }
+      if (a === '--weeks') {
+        const n = Number(rest[i + 1] ?? '');
+        if (!Number.isFinite(n) || n <= 0) throw new Error(`--weeks inválido: ${rest[i + 1] ?? ''}`);
+        fromMs = Date.now() - n * 7 * 86400 * 1000;
+        i += 1;
+        continue;
+      }
+      if (a === '--months') {
+        const n = Number(rest[i + 1] ?? '');
+        if (!Number.isFinite(n) || n <= 0) throw new Error(`--months inválido: ${rest[i + 1] ?? ''}`);
+        fromMs = Date.now() - n * 30 * 86400 * 1000;
+        i += 1;
+        continue;
+      }
+      if (a === '--around') {
+        const v = String(rest[i + 1] ?? '').trim();
+        if (!v) throw new Error('--around requer valor');
+        if (v.toLowerCase() === 'now') {
+          aroundMs = Date.now();
+        } else if (/^\d+$/.test(v)) {
+          const rows = sessionEntries(BASE_DIR);
+          const idx = Number(v);
+          if (idx < 1 || idx > rows.length) throw new Error(`--around índice inválido: ${v}`);
+          aroundMs = rows[idx - 1].startedAtMs;
+        } else {
+          const rows = sessionEntries(BASE_DIR);
+          const exact = rows.find((r) => r.id.toLowerCase() === v.toLowerCase());
+          aroundMs = exact ? exact.startedAtMs : parseDateInputToMs(v);
+        }
+        i += 1;
+        continue;
+      }
+      if (a === '--within') {
+        withinMs = parseDurationToMs(String(rest[i + 1] ?? ''));
+        i += 1;
+        continue;
+      }
+      if (a === '--limit') {
+        const n = Number(rest[i + 1] ?? '');
+        if (!Number.isFinite(n) || n < 1) throw new Error(`--limit inválido: ${rest[i + 1] ?? ''}`);
+        limit = Math.floor(n);
+        i += 1;
+        continue;
+      }
+      if (a === '--sort') {
+        const v = String(rest[i + 1] ?? '').trim().toLowerCase();
+        if (v !== 'newest' && v !== 'oldest' && v !== 'closest') {
+          throw new Error(`--sort inválido: ${v} (use newest|oldest|closest)`);
+        }
+        sortMode = v as SessionSortMode;
+        i += 1;
+        continue;
+      }
+      if (a.length > 0) {
+        throw new Error(`opção inválida para session ls: ${a}`);
+      }
+    }
+
+    if (withinMs !== null && aroundMs === null) {
+      throw new Error('--within exige --around');
+    }
+    if (fromMs !== null && toMs !== null && fromMs > toMs) {
+      throw new Error('--from não pode ser maior que --to');
+    }
+
+    let rows = sessionEntries(BASE_DIR);
+
+    if (themeFilters.length > 0) {
+      rows = rows.filter((r) => themeFilters.every((t) => r.textIndex.includes(t)));
+    }
+    if (fromMs !== null) rows = rows.filter((r) => r.startedAtMs >= fromMs);
+    if (toMs !== null) rows = rows.filter((r) => r.startedAtMs <= toMs);
+
+    if (aroundMs !== null || sortMode === 'closest') {
+      const centerMs = aroundMs ?? Date.now();
+      rows = rows
+        .map((r) => ({ ...r, _distanceMs: Math.abs(r.startedAtMs - centerMs) }))
+        .filter((r) => withinMs === null || r._distanceMs <= withinMs)
+        .sort((a, b) => a._distanceMs - b._distanceMs)
+        .map(({ _distanceMs, ...restRow }) => restRow);
+    } else {
+      rows = rows.sort((a, b) => {
+        if (sortMode === 'oldest') return a.startedAtMs - b.startedAtMs || a.id.localeCompare(b.id);
+        return b.startedAtMs - a.startedAtMs || b.id.localeCompare(a.id);
+      });
+    }
+
+    if (limit > 0) rows = rows.slice(0, limit);
+
+    const nowMs = Date.now();
+    const jsonRows = rows.map((r) => ({
+      n: r.n,
+      id: r.id,
+      started_at: r.startedIso || null,
+      age: r.startedAtMs > 0 ? formatAge(nowMs - r.startedAtMs, 'auto') : 'n/a',
+      repo_dir: r.repoDir || null,
+      repo_name: r.repoDir ? path.basename(r.repoDir) : null,
+      theme: r.theme,
+      dir_path: r.dirPath
+    }));
+
+    if (jsonOut) {
+      console.log(JSON.stringify({
+        count: jsonRows.length,
+        filters: {
+          theme: themeFilters,
+          from: fromMs !== null ? new Date(fromMs).toISOString() : null,
+          to: toMs !== null ? new Date(toMs).toISOString() : null,
+          around: aroundMs !== null ? new Date(aroundMs).toISOString() : null,
+          within_ms: withinMs,
+          sort: sortMode,
+          limit: limit || null
+        },
+        sessions: jsonRows
+      }, null, 2));
+      return 0;
+    }
+
     console.log(stage('Sessões disponíveis:'));
     if (rows.length === 0) {
       console.log('  (nenhuma)');
@@ -651,7 +1006,11 @@ async function cmdSession(subArgs: string[]): Promise<number> {
     }
     for (const r of rows) {
       const mark = cfg.defaultSession === r.id ? ok(' [default]') : '';
-      console.log(`  ${dim(String(r.n).padStart(3, ' '))}  ${file(r.id)}${mark}`);
+      const repoName = r.repoDir ? path.basename(r.repoDir) : '-';
+      const age = r.startedAtMs > 0 ? formatAge(nowMs - r.startedAtMs, 'auto') : 'n/a';
+      const when = r.startedIso ? r.startedIso.replace('T', ' ').replace('Z', ' UTC') : 'n/a';
+      console.log(`  ${dim(String(r.n).padStart(3, ' '))}  ${file(r.id)}${mark} ${dim(`[${when}] [age=${age}] [repo=${repoName}]`)}`);
+      console.log(`       ${dim('tema:')} ${r.theme}`);
     }
     return 0;
   }
@@ -1007,6 +1366,7 @@ async function main(): Promise<number> {
     switch (cmdName) {
       case 'repo': return await cmdRepo(args);
       case 'session': return await cmdSession(args);
+      case 'sessions': return await cmdSession(['ls', ...args]);
       case 'exec': return await cmdExec(args);
       case 'start': return await cmdStart(args);
       case 'open': return await cmdStart(args);
