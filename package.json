@@ -1,6 +1,6 @@
 {
   "name": "codex-live",
-  "version": "1.0.19",
+  "version": "1.0.22",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,13 +11,14 @@
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "rebuild": "npm run clean && npm run build",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "typescript": "^5.7.3"
   },
   "buildMeta": {
-    "builtAtUtc": "2026-03-01T07:06:04.813Z"
+    "builtAtUtc": "2026-03-13T06:06:25.000Z"
   }
 }

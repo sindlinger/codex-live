@@ -31,10 +31,16 @@ codex-live repo rm operpdf
 ### Sessões
 ```bash
 codex-live session ls
+codex-live session ls --theme despacho
+codex-live session ls --days 2
+codex-live session ls --sort newest --limit 20
 codex-live session show
 codex-live session use 1
 codex-live session clear
 ```
+
+`session ls` busca somente no histórico real do Codex em `~/.codex/sessions`.
+Os diretórios locais em `./sessions/` são apenas logs operacionais do wrapper e não entram na busca.
 
 ### Fluxo principal (`run.exe`)
 ```bash
@@ -48,7 +54,7 @@ codex-live flow run 1-10 @M-DESP :Q150 --probe
 codex-live flow quick :Q22 --probe
 ```
 
-### Execução arbitrária com log de sessão
+### Execução arbitrária com log de execução
 ```bash
 codex-live exec -- git status
 ```
@@ -82,15 +88,16 @@ Notas do `open`:
 - `src/`: TypeScript
 - `dist/`: compilado
 - `bin/`: entrada pública (`codex-live`)
-- `sessions/`: logs por sessão
+- `sessions/`: logs locais de execução/watch
 - `logs/`: relatórios JSON
-- `lixeira/`: wrappers legados removidos
+- `lixeira/`: wrappers removidos
 
 ## Desenvolvimento
 
 ```bash
 npm run build
 npm run check
+npm test
 npm run clean && npm run rebuild
 ```
 
@@ -104,7 +111,7 @@ npm run clean && npm run rebuild
   - horário de início da sessão
   - horário do último build
 
-### Logs da sessão
+### Logs locais de execução
 
 - `commands.log`: comando e status de saída.
 - `output.log`: stdout/stderr bruto da execução.
