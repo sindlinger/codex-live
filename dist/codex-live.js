@@ -16,28 +16,42 @@ const LOCAL_TMUX_CONF = path.join(BASE_DIR, '.tmux.conf');
 const BUILD_INFO = readBuildInfo(BASE_DIR);
 function usage() {
     console.log(`codex-live v${BUILD_INFO.version} (${BUILD_INFO.builtAtUtc})`);
-    console.log('Codex live orchestrator.\n');
-    console.log(`Usage: ${dodgeBlue('codex-live')} [OPTIONS] <COMMAND>\n`);
-    console.log('Comandos estáveis:');
-    console.log(`  ${dodgeBlue('open')}${dim('      Abre o Codex interativo com logs no terminal atual')}`);
-    console.log(`  ${dodgeBlue('capture')}${dim('   Inspeciona eventos do Codex sem nova execução')}`);
-    console.log(`  ${dodgeBlue('session')}${dim('   Sessões do Codex (ls/active/attach/use/show/clear)')}`);
-    console.log(`  ${dodgeBlue('sessions')}${dim('  Alias de `session ls` com filtros')}`);
-    console.log(`  ${dodgeBlue('flow')}${dim('      Pipeline run/quick')}`);
-    console.log(`  ${dodgeBlue('exec')}${dim('      Executa comando com logging')}`);
-    console.log(`  ${dodgeBlue('help')}${dim('      Mostra esta ajuda')}\n`);
-    console.log('Options:');
-    console.log(`  --repo <REPO>${dim('       Repository name or path')}`);
-    console.log(`  --session <SESSION>${dim(' Session id, number, or current')}`);
-    console.log(`  -h, --help${dim('              Show help')}\n`);
-    console.log('Exemplos:');
+    console.log('CLI para histórico do Codex, execução com logs locais e observabilidade.\n');
+    console.log(`uso: ${dodgeBlue('codex-live')} [opções] <comando>\n`);
+    console.log('modelo:');
+    console.log(`  ${dim('-')} ${dodgeBlue('session')}, ${dodgeBlue('sessions')} e ${dodgeBlue('capture')} leem o histórico real em ${file('~/.codex/sessions')}`);
+    console.log(`  ${dim('-')} ${dodgeBlue('exec')}, ${dodgeBlue('flow')}, ${dodgeBlue('watch')}, ${dodgeBlue('open-watch')}, ${dodgeBlue('popup')} e ${dodgeBlue('tmux')} usam logs locais em ${file('./sessions')}`);
+    console.log(`  ${dim('-')} ${dodgeBlue('open')} é um alias interativo de ${dodgeBlue('codex')}\n`);
+    console.log('histórico do Codex:');
+    console.log(`  ${dodgeBlue('session')}${dim('     Busca, exporta e seleciona sessões reais do Codex')}`);
+    console.log(`  ${dodgeBlue('sessions')}${dim('    Alias de `session ls` com filtros')}`);
+    console.log(`  ${dodgeBlue('capture')}${dim('     Inspeciona eventos de uma sessão do Codex sem nova execução')}`);
+    console.log(`  ${dodgeBlue('codex')}${dim('       Encaminha args para o binário original do Codex')}`);
+    console.log(`  ${dodgeBlue('open')}${dim('        Abre o Codex interativo no terminal atual')}\n`);
+    console.log('execução com logs locais:');
+    console.log(`  ${dodgeBlue('exec')}${dim('        Executa um comando arbitrário com log em ./sessions')}`);
+    console.log(`  ${dodgeBlue('flow')}${dim('        Executa o pipeline run/quick com log em ./sessions')}\n`);
+    console.log('observabilidade local:');
+    console.log(`  ${dodgeBlue('watch')}${dim('       Acompanha um log local no terminal atual')}`);
+    console.log(`  ${dodgeBlue('open-watch')}${dim('  Abre uma janela de watch separada para um log local')}`);
+    console.log(`  ${dodgeBlue('popup')}${dim('       Abre o watch em popup do tmux')}`);
+    console.log(`  ${dodgeBlue('tmux')}${dim('        Sobe a UI tmux com watch opcional')}\n`);
+    console.log('configuração:');
+    console.log(`  ${dodgeBlue('repo')}${dim('        Lista, adiciona e seleciona repositórios')}`);
+    console.log(`  ${dodgeBlue('help')}${dim('        Mostra esta ajuda')}\n`);
+    console.log('opções globais:');
+    console.log(`  --repo <nome|path>${dim('   Resolve o repositório padrão ou explícito')}`);
+    console.log(`  --session <valor>${dim('   Sessão Codex para `codex/open`; id de log para `exec/flow/watch`')}`);
+    console.log(`  -h, --help${dim('          Mostra ajuda')}\n`);
+    console.log('exemplos:');
+    console.log(`  ${dodgeBlue('codex-live session ls --theme dockermt --limit 10')}`);
+    console.log(`  ${dodgeBlue('codex-live session use 1')}`);
     console.log(`  ${dodgeBlue('codex-live open')}`);
-    console.log(`  ${dodgeBlue('codex-live capture')}`);
-    console.log(`  ${dodgeBlue('codex-live capture 2 --focus --behind --follow')}`);
-    console.log(`  ${dodgeBlue('codex-live session active --age auto')}`);
-    console.log(`  ${dodgeBlue('codex-live session attach 1')}`);
-    console.log(`  ${dodgeBlue('codex-live flow quick :Q150 --probe')}`);
+    console.log(`  ${dodgeBlue('codex-live capture 1 --focus --behind')}`);
     console.log(`  ${dodgeBlue('codex-live exec -- git status')}`);
+    console.log(`  ${dodgeBlue('codex-live flow quick :Q150 --probe')}`);
+    console.log(`  ${dodgeBlue('codex-live watch current')}`);
+    console.log(`  ${dodgeBlue('codex-live open-watch current')}`);
     console.log(`\n${dim('Use `codex-live <command> --help` para ajuda específica.')}`);
 }
 function parseOpts(args) {
@@ -935,10 +949,13 @@ async function cmdSpy(args) {
         const a = args[i];
         if (a === '--help' || a === '-h' || a === 'help') {
             console.log('uso: codex-live capture [last|<n>|<session_id>|<arquivo.jsonl>] [--focus] [--behind] [--follow] [--raw] [--no-color] [--lines N]');
+            console.log(`origem padrão: ${file('~/.codex/sessions')}`);
+            console.log('atalhos: `last` e `<n>` usam o catálogo de sessões do Codex ordenado por recência.');
             console.log('exemplos:');
             console.log('  codex-live capture');
-            console.log('  codex-live capture 2 --focus');
+            console.log('  codex-live capture 1 --focus');
             console.log('  codex-live capture 2 --focus --behind');
+            console.log('  codex-live capture last --follow');
             console.log('  codex-live capture 019cac6b-2dc1-78e1-a39b-e0b40970cb0a --follow');
             console.log('  codex-live capture --raw --lines 30');
             console.log('obs: modo passivo, sem nova chamada ao modelo (não consome tokens).');
@@ -982,7 +999,7 @@ async function cmdSpy(args) {
     const paintStage = (s) => (colorize ? stage(s) : s);
     const paintFile = (s) => (colorize ? file(s) : s);
     const paintDim = (s) => (colorize ? dim(s) : s);
-    console.log(paintStage('Capture local:'));
+    console.log(paintStage('Capture do Codex:'));
     console.log(`  session=${paintFile(chosen.id || '(sem-id)')} file=${paintFile(chosen.path)} modified=${paintDim(when)}`);
     const content = fs.readFileSync(chosen.path, 'utf8');
     const allLines = normalizeLineBreaks(content).split('\n').filter((x) => x.trim().length > 0);
@@ -1046,6 +1063,20 @@ async function cmdRepo(subArgs) {
     const cfg = loadConfig(BASE_DIR);
     const [actionRaw, ...rest] = subArgs;
     const action = (actionRaw ?? 'ls').toLowerCase();
+    if (action === 'help' || action === '--help' || action === '-h') {
+        console.log('uso: codex-live repo <ls|add|use|rm> [args]');
+        console.log('ações:');
+        console.log('  ls                      lista repositórios cadastrados');
+        console.log('  add <nome> <path>       adiciona ou sobrescreve um repositório');
+        console.log('  use <nome|path>         define o repositório padrão');
+        console.log('  rm <nome>               remove um repositório cadastrado');
+        console.log('exemplos:');
+        console.log('  codex-live repo ls');
+        console.log('  codex-live repo add operpdf /mnt/c/git/operpdf-textopsalign');
+        console.log('  codex-live repo use operpdf');
+        console.log('  codex-live repo rm operpdf');
+        return 0;
+    }
     if (action === 'ls' || action === 'list') {
         console.log(stage('Repos cadastrados:'));
         const keys = Object.keys(cfg.repos).sort();
@@ -1096,6 +1127,9 @@ async function cmdSession(subArgs) {
     const action = (actionRaw ?? 'ls').toLowerCase();
     if (action === 'help' || opts.help) {
         console.log('uso: codex-live session <ação> [args]');
+        console.log(`fonte: ${file('~/.codex/sessions')}`);
+        console.log('obs: `ls`, `export`, `show`, `use` e `clear` operam sobre sessões reais do Codex.');
+        console.log('obs: a sessão padrão definida aqui é usada por `codex-live codex` e `codex-live open`.');
         console.log('ações:');
         console.log('  ls [filtros]            lista sessões do Codex');
         console.log('  export|csv [filtros] [--out arquivo.csv] [--stdout]  exporta CSV');
@@ -1115,6 +1149,7 @@ async function cmdSession(subArgs) {
         console.log('  --json                  saída JSON');
         console.log('  --limit <n>             limita resultado');
         console.log('exemplos:');
+        console.log('  codex-live session ls --theme dockermt --limit 10');
         console.log('  codex-live sessions --theme despacho --weeks 2');
         console.log('  codex-live session ls --from 2026-03-01 --to 2026-03-07');
         console.log('  codex-live session ls --around now --within 6h');
@@ -1122,6 +1157,8 @@ async function cmdSession(subArgs) {
         console.log('  codex-live sessions --theme certidao --weeks 4 --json');
         console.log('  codex-live sessions export --theme despacho --weeks 1 --out /tmp/sessoes.csv');
         console.log('  codex-live sessions csv --theme certidao --since 30d');
+        console.log('  codex-live session use 1');
+        console.log('  codex-live session show');
         console.log('  codex-live session active --age auto');
         console.log('  codex-live session active --age m --min-age 10m');
         console.log('  codex-live session attach 2');
@@ -1207,7 +1244,7 @@ async function cmdSession(subArgs) {
         console.log(stage('Janelas watch ativas:'));
         if (active.length === 0) {
             console.log('  (nenhuma janela watch ativa)');
-            console.log(dim('dica: use `codex-live open <session>` e depois `codex-live session active`'));
+            console.log(dim('dica: use `codex-live watch current` no terminal atual ou `codex-live open-watch current` em nova janela.'));
         }
         else {
             const grouped = new Map();
@@ -1248,7 +1285,7 @@ async function cmdSession(subArgs) {
         const nowMs = Date.now();
         const codexRows = listActiveCodexRows()
             .filter((r) => minAgeSec <= 0 || (nowMs - r.startedAtMs) / 1000 >= minAgeSec);
-        console.log(stage('Codex original ativo:'));
+        console.log(stage('Sessões Codex ativas:'));
         if (codexRows.length === 0) {
             console.log('  (nenhum processo codex ativo)');
         }
@@ -1259,7 +1296,7 @@ async function cmdSession(subArgs) {
                 const age = formatAge(nowMs - r.startedAtMs, ageUnit);
                 console.log(`  ${dim(String(i + 1).padStart(3, ' '))} pid=${r.pid} mode=${r.mode}${sidLabel} ${dim(`[${r.startedText}] [age=${age}]`)}`);
             }
-            console.log(dim('dica: para entrar em uma sessão com id, use `codex resume <session_id>`'));
+            console.log(dim('dica: para entrar em uma sessão com id, use `codex-live session attach <n|session_id>`'));
         }
         return 0;
     }
@@ -1324,6 +1361,12 @@ async function cmdExec(args) {
     const { opts, rest } = parseOpts(args);
     if (opts.help) {
         console.log('uso: codex-live exec [--repo <nome|path>] [--session <id|número do log>] -- <comando> [args]');
+        console.log(`destino do log: ${file('./sessions/<id>/')}`);
+        console.log('obs: `--session` aqui seleciona o id do log local, não uma sessão do Codex.');
+        console.log('exemplos:');
+        console.log('  codex-live exec -- git status');
+        console.log('  codex-live exec --repo operpdf -- npm test');
+        console.log('  codex-live exec --session current -- bash -lc "echo ok"');
         return 0;
     }
     if (rest.length === 0)
@@ -1336,7 +1379,7 @@ async function cmdExec(args) {
         callArgs.push('--session', sessionId);
     callArgs.push('--repo', repo, '--', ...rest);
     console.log(stage('Execução:'));
-    console.log(`  repo=${file(repo)} session=${file(sessionId)} cmd=${dim(rest.join(' '))}`);
+    console.log(`  repo=${file(repo)} log=${file(sessionId)} cmd=${dim(rest.join(' '))}`);
     return runInternal('codex-live-run.js', callArgs);
 }
 async function cmdFlow(args) {
@@ -1346,10 +1389,13 @@ async function cmdFlow(args) {
         console.log('uso:');
         console.log('  codex-live flow run [range] [model] [input] [--probe] [--param <arg>]...');
         console.log('  codex-live flow quick [input] [--probe] [--param <arg>]...');
+        console.log(`destino do log: ${file('./sessions/<id>/')}`);
+        console.log('obs: `--session` aqui seleciona o id do log local reutilizado pelo wrapper.');
         console.log('exemplos:');
         console.log('  codex-live flow run');
         console.log('  codex-live flow run 1-10 @M-DESP :Q22 --probe');
         console.log('  codex-live flow quick :Q150 --probe');
+        console.log('  codex-live flow quick --session current :Q22');
         return 0;
     }
     const cfg = loadConfig(BASE_DIR);
@@ -1381,7 +1427,7 @@ async function cmdFlow(args) {
         callArgs.push('--session', sessionId);
     callArgs.push('--repo', repo, '--', ...cmdLine);
     console.log(stage('Flow preparado:'));
-    console.log(`  mode=${action} repo=${file(repo)} session=${file(sessionId)} range=${range} model=${model} input=${input} probe=${opts.probe ? 'true' : 'false'}`);
+    console.log(`  mode=${action} repo=${file(repo)} log=${file(sessionId)} range=${range} model=${model} input=${input} probe=${opts.probe ? 'true' : 'false'}`);
     return runInternal('codex-live-run.js', callArgs);
 }
 async function cmdMonitor(action, args) {
@@ -1398,12 +1444,37 @@ async function cmdMonitor(action, args) {
             resolvedOpts.session = sessionArg;
     }
     const sessionId = resolveLogSession(resolvedOpts);
+    const publicAction = action === 'open' ? 'open-watch' : action;
     if (opts.help) {
         if (action === 'tmux') {
             console.log('uso: codex-live tmux [current|<id>|<número>] [--width 70%] [--height 55%] [--watch popup|split|both|window|none] [--no-attach] [--log]');
+            console.log(`fonte: ${file('./sessions')}`);
+            console.log('obs: `<id>` e `<número>` aqui apontam para logs locais do wrapper.');
+            console.log('exemplos:');
+            console.log('  codex-live tmux');
+            console.log('  codex-live tmux --repo operpdf --watch popup');
+            console.log('  codex-live tmux current --watch split');
         }
         else {
-            console.log(`uso: codex-live ${action} [current|<id>|<número>]${action === 'popup' ? ' [--width 70%] [--height 55%]' : ''}`);
+            console.log(`uso: codex-live ${publicAction} [current|<id>|<número>]${action === 'popup' ? ' [--width 70%] [--height 55%]' : ''}`);
+            console.log(`fonte: ${file('./sessions')}`);
+            console.log('obs: `<id>` e `<número>` aqui apontam para logs locais do wrapper.');
+            console.log('exemplos:');
+            if (action === 'watch') {
+                console.log('  codex-live watch');
+                console.log('  codex-live watch current');
+                console.log('  codex-live watch 1');
+            }
+            else if (action === 'open') {
+                console.log('  codex-live open-watch');
+                console.log('  codex-live open-watch current');
+                console.log('  codex-live open-watch 1');
+            }
+            else {
+                console.log('  codex-live popup');
+                console.log('  codex-live popup current --width 70% --height 55%');
+                console.log('  codex-live popup 1');
+            }
         }
         return 0;
     }
@@ -1419,7 +1490,7 @@ async function cmdMonitor(action, args) {
             callArgs.push('--height', opts.height);
         // Forward advanced tmux flags (ex: --no-attach, --no-popup, --log, --log-dir, --log-file)
         callArgs.push(...tailArgs);
-        console.log(stage('UI tmux:'), `session=${file(tmuxSession)} repo=${file(repo)}`);
+        console.log(stage('UI tmux:'), `log=${file(sessionId)} tmux_session=${file(tmuxSession)} repo=${file(repo)}`);
         return runInternal('codex-tmux.js', callArgs);
     }
     const map = {
@@ -1435,7 +1506,7 @@ async function cmdMonitor(action, args) {
         if (opts.height)
             callArgs.push('--height', opts.height);
     }
-    console.log(stage(`${action.toUpperCase()}:`), `session=${file(sessionId)}`);
+    console.log(stage(`${publicAction.toUpperCase()}:`), `log=${file(sessionId)}`);
     return runInternal(script, callArgs);
 }
 async function cmdCodex(args) {
@@ -1527,7 +1598,7 @@ async function main() {
             case 'spy': return await cmdSpy(args);
             case 'capture': return await cmdCapture(args);
             case 'watch': return await cmdMonitor('watch', args);
-            case 'watch-open': return await cmdMonitor('open', args);
+            case 'open-watch': return await cmdMonitor('open', args);
             case 'popup': return await cmdMonitor('popup', args);
             case 'tmux': return await cmdMonitor('tmux', args);
             case 'codex': return await cmdCodex(args);

@@ -20,6 +20,12 @@ Somente este comando é público em `bin/`:
 
 ## Uso moderno
 
+### Modelo
+
+- `session`, `sessions` e `capture` leem o histórico real do Codex em `~/.codex/sessions`.
+- `exec`, `flow`, `watch`, `open-watch`, `popup` e `tmux` usam logs locais em `./sessions`.
+- `open` é o alias interativo de `codex-live codex`.
+
 ### Repositórios
 ```bash
 codex-live repo ls
@@ -34,13 +40,23 @@ codex-live session ls
 codex-live session ls --theme despacho
 codex-live session ls --days 2
 codex-live session ls --sort newest --limit 20
+codex-live session ls --theme dockermt --limit 10
 codex-live session show
 codex-live session use 1
 codex-live session clear
+codex-live session attach 1
 ```
 
 `session ls` busca somente no histórico real do Codex em `~/.codex/sessions`.
 Os diretórios locais em `./sessions/` são apenas logs operacionais do wrapper e não entram na busca.
+
+### Capture do histórico do Codex
+```bash
+codex-live capture
+codex-live capture 1 --focus
+codex-live capture last --follow
+codex-live capture 019cac6b-2dc1-78e1-a39b-e0b40970cb0a --behind
+```
 
 ### Fluxo principal (`run.exe`)
 ```bash
@@ -57,30 +73,34 @@ codex-live flow quick :Q22 --probe
 ### Execução arbitrária com log de execução
 ```bash
 codex-live exec -- git status
+codex-live exec --repo operpdf -- npm test
+codex-live exec --session current -- bash -lc "echo ok"
 ```
 
 ### Codex original via codex-live
 ```bash
+codex-live open
 codex-live codex help
 codex-live codex -- --version
 codex-live codex -- --model gpt-5
 ```
 
-### Monitoramento (watch/open/popup/tmux)
+### Monitoramento (watch/open-watch/popup/tmux)
 ```bash
 codex-live watch
-codex-live open current
+codex-live watch current
+codex-live open-watch current
 codex-live popup current --width 70% --height 55%
-codex-live tmux --repo operpdf --session codex_live --width 70% --height 55%
 codex-live tmux --watch popup
-codex-live tmux --watch split
+codex-live tmux current --watch split
 codex-live tmux --watch both
 codex-live tmux --watch window
 ```
 
-Notas do `open`:
-- `codex-live open` abre no ambiente **WSL/tmux** (não usa PowerShell/Windows).
-- Requer cliente tmux ativo para abrir popup/janela.
+Notas:
+- `codex-live open` inicia o Codex interativo no terminal atual.
+- `codex-live open-watch` abre uma nova janela de watch para um log local em `./sessions`.
+- `popup` e `tmux` requerem cliente tmux ativo para abrir popup/janela.
 - Se não houver cliente tmux ativo, o comando falha com instrução manual.
 
 ## Estrutura
