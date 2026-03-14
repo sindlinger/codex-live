@@ -69,6 +69,14 @@ codex-live search --json "certidao conselho reconciliar com despacho"
 
 `search --to-codex` primeiro levanta candidatas em `~/.codex/sessions` e só depois pede ao Codex para reranquear essas candidatas com um protocolo fixo de investigação.
 
+Fluxo rápido:
+
+```bash
+codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"
+codex-live capture <session_id> --focus --behind
+codex-live watch <session_id>
+```
+
 ### Fluxo principal (`run.exe`)
 ```bash
 # defaults: 1-12 @M-DESP :Q22

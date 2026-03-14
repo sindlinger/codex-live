@@ -75,6 +75,10 @@ function usage() {
     console.log(`  ${dodgeBlue('codex-live flow quick :Q150 --probe')}`);
     console.log(`  ${dodgeBlue('codex-live watch last')}`);
     console.log(`  ${dodgeBlue('codex-live open-watch 1')}`);
+    console.log('\nfluxos úteis:');
+    console.log(`  localizar por memória   ${dodgeBlue('codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"')}`);
+    console.log(`  abrir a sessão          ${dodgeBlue('codex-live capture <session_id> --focus --behind')}`);
+    console.log(`  acompanhar a sessão     ${dodgeBlue('codex-live watch <session_id>')}`);
     console.log(`\n${dim('Use `codex-live <command> --help` para ajuda específica.')}`);
 }
 function searchLogsRoot() {
@@ -1437,6 +1441,10 @@ async function cmdSpy(args) {
             console.log('  codex-live capture last --follow');
             console.log('  codex-live capture 019cac6b-2dc1-78e1-a39b-e0b40970cb0a --follow');
             console.log('  codex-live capture --raw --lines 30');
+            console.log('fluxo comum:');
+            console.log('  1. codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"');
+            console.log('  2. codex-live capture <session_id> --focus --behind');
+            console.log('  3. codex-live watch <session_id>');
             console.log('obs: modo passivo, sem nova chamada ao modelo (não consome tokens).');
             return 0;
         }
@@ -1640,6 +1648,10 @@ async function cmdSession(subArgs) {
         console.log('  codex-live session active --age m --min-age 10m');
         console.log('  codex-live session attach 2');
         console.log('  codex-live session attach 019cac6b-2dc1-78e1-a39b-e0b40970cb0a');
+        console.log('fluxos úteis:');
+        console.log('  localizar por memória:  codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"');
+        console.log('  abrir a melhor sessão:  codex-live capture <session_id> --focus --behind');
+        console.log('  seguir acompanhando:    codex-live watch <session_id>');
         return 0;
     }
     if (action === 'ls' || action === 'list') {
@@ -1918,6 +1930,9 @@ async function cmdMonitor(action, args) {
             console.log('  codex-live tmux');
             console.log('  codex-live tmux --repo operpdf --watch popup');
             console.log('  codex-live tmux 1 --watch split');
+            console.log('fluxo útil:');
+            console.log('  codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"');
+            console.log('  codex-live tmux <session_id> --watch popup');
         }
         else {
             console.log(`uso: codex-live ${publicAction} [last|<n>|<session_id>|<arquivo.jsonl>]${action === 'popup' ? ' [--width 70%] [--height 55%]' : ''}`);
@@ -1939,6 +1954,14 @@ async function cmdMonitor(action, args) {
                 console.log('  codex-live popup last --width 70% --height 55%');
                 console.log('  codex-live popup 1');
             }
+            console.log('fluxo útil:');
+            console.log('  codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"');
+            if (action === 'watch')
+                console.log('  codex-live watch <session_id>');
+            if (action === 'open')
+                console.log('  codex-live open-watch <session_id>');
+            if (action === 'popup')
+                console.log('  codex-live popup <session_id> --width 70% --height 55%');
         }
         return 0;
     }
@@ -1983,6 +2006,10 @@ async function cmdSearch(args) {
         console.log('  codex-live search --days 3 "dockermt nas imagens locais"');
         console.log('  codex-live search --to-codex "estávamos procurando o dockermt há uns 3 dias no dockerhub"');
         console.log('  codex-live search --repo operpdf --json "certidao conselho reconciliar com despacho"');
+        console.log('fluxo comum:');
+        console.log('  1. codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"');
+        console.log('  2. codex-live capture <session_id> --focus --behind');
+        console.log('  3. codex-live watch <session_id>');
         return 0;
     }
     const query = parseSearchQueryOptions(rest, cfg, opts);

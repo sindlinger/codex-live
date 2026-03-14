@@ -1,6 +1,6 @@
 {
   "name": "codex-live",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "private": true,
   "type": "module",
   "engines": {
@@ -19,6 +19,6 @@
     "typescript": "^5.7.3"
   },
   "buildMeta": {
-    "builtAtUtc": "2026-03-14T05:31:11.824Z"
+    "builtAtUtc": "2026-03-14T06:18:58.004Z"
   }
 }

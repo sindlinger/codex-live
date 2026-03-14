@@ -32,6 +32,9 @@ test('main help explains that monitoramento now reads real Codex sessions', () =
   assert.match(out.stdout, /codex-live search "dockermt no dockerhub há uns 3 dias"/);
   assert.match(out.stdout, /codex-live session ls --theme dockermt --limit 10/);
   assert.match(out.stdout, /codex-live open-watch 1/);
+  assert.match(out.stdout, /fluxos úteis:/);
+  assert.match(out.stdout, /codex-live capture <session_id> --focus --behind/);
+  assert.match(out.stdout, /codex-live watch <session_id>/);
 });
 
 test('session help documents real Codex sessions and examples', () => {
@@ -41,9 +44,11 @@ test('session help documents real Codex sessions and examples', () => {
   assert.match(out.stdout, /sessão padrão definida aqui é usada por `codex-live codex` e `codex-live open`/);
   assert.match(out.stdout, /codex-live session ls --theme dockermt --limit 10/);
   assert.match(out.stdout, /codex-live session use 1/);
+  assert.match(out.stdout, /fluxos úteis:/);
+  assert.match(out.stdout, /codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"/);
 });
 
-test('repo and watch help show examples against real Codex sessions', () => {
+test('repo, watch, search and capture help show workflow examples against real Codex sessions', () => {
   const repoOut = runCli(['repo', 'help']);
   assert.equal(repoOut.status, 0, repoOut.stderr || repoOut.stdout);
   assert.match(repoOut.stdout, /codex-live repo add operpdf/);
@@ -53,4 +58,16 @@ test('repo and watch help show examples against real Codex sessions', () => {
   assert.match(watchOut.stdout, /fonte: ~\/\.codex\/sessions/);
   assert.match(watchOut.stdout, /alvo é sempre uma sessão real do Codex/);
   assert.match(watchOut.stdout, /codex-live watch last/);
+  assert.match(watchOut.stdout, /fluxo útil:/);
+  assert.match(watchOut.stdout, /codex-live watch <session_id>/);
+
+  const searchOut = runCli(['search', '--help']);
+  assert.equal(searchOut.status, 0, searchOut.stderr || searchOut.stdout);
+  assert.match(searchOut.stdout, /fluxo comum:/);
+  assert.match(searchOut.stdout, /codex-live capture <session_id> --focus --behind/);
+
+  const captureOut = runCli(['capture', '--help']);
+  assert.equal(captureOut.status, 0, captureOut.stderr || captureOut.stdout);
+  assert.match(captureOut.stdout, /fluxo comum:/);
+  assert.match(captureOut.stdout, /codex-live watch <session_id>/);
 });
