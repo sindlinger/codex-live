@@ -1,22 +1,51 @@
-# PROMPT.md — Codex Live CLI
+# PROMPT.md — Modelo operacional do codex-live
 
 ## Objetivo
-Executar comandos com rastreabilidade total e monitoramento ao vivo, com sessão identificável por ID ou número.
+
+Ser um wrapper fino para o historico real do Codex, facilitando:
+
+- localizar sessoes passadas a partir de memoria imperfeita
+- inspecionar eventos da sessao sem nova execucao
+- retomar a sessao correta no proprio Codex
+- acompanhar sessoes reais em watch, popup ou tmux
+- executar comandos auxiliares com logs separados, sem confundir isso com sessoes do usuario
+
+## Conceitos
+
+- Sessao real do usuario:
+  - arquivo `.jsonl` em `~/.codex/sessions`
+- Log auxiliar local:
+  - artefato em `./logs/runs` ou `./logs/search`
+- Busca por memoria:
+  - recuperacao local em `~/.codex/sessions`
+  - reranqueamento opcional pelo proprio Codex
+  - acoes opcionais: `--open`, `--capture`, `--watch`, `--ask`
 
 ## Fluxo recomendado
-1. `codex-open-watch` (ou `codex-popup` em tmux)
-2. `codex-live pipeline --repo operpdf --range 1-12 --model @M-DESP --input :Q22 --probe`
-3. Se necessário, usar `codex-live sessions list` e revisar sessão por número/ID.
+
+1. Encontrar a conversa:
+   - `codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"`
+2. Validar a sessao:
+   - `codex-live capture <session_id> --focus --behind`
+3. Retomar ou perguntar:
+   - `codex-live --session <session_id> open`
+   - ou `codex-live search --to-codex --ask "o que concluimos?" "dockermt nas imagens locais e no dockerhub"`
 
 ## Comandos essenciais
-- `codex-live repos list|add|use|remove`
-- `codex-live sessions list`
-- `codex-live run --repo <nome|path> -- <cmd>`
-- `codex-live pipeline --repo <nome|path> --range <1-12> --model <alias> --input <alias> [--probe] [--param <arg>]...`
-- `codex-live watch --session-number <n>`
-- `codex-live watch --session-id <id>`
+
+- `codex-live session ls`
+- `codex-live capture <session_id> --focus --behind`
+- `codex-live search --to-codex "..."`
+- `codex-live search --to-codex --ask "pergunta" "..."`
+- `codex-live --session <session_id> open`
+- `codex-live watch <session_id>`
+- `codex-live exec -- <cmd>`
+- `codex-live flow run ...`
 
 ## Regras operacionais
-- Não executar comando crítico sem `codex-live run` ou `codex-live pipeline`.
-- Sempre citar `session_id` ao reportar evidências.
-- Nunca ocultar erro; reportar comando e exit code.
+
+- Se a pergunta do usuario e sobre "em qual conversa falamos disso?", use `search`.
+- Se a pergunta e "o que decidimos naquela conversa?", use `search --ask`.
+- Se a intencao for continuar a conversa, use `open` com `--session` ou `session attach`.
+- Nunca promover logs locais a "sessoes do usuario".
+- Sempre devolver `session_id` e proximo comando sugerido quando isso ajudar.

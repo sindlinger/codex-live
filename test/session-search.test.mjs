@@ -327,3 +327,87 @@ printf '%s\\n' '{"best_session_id":"${targetId}","confidence":"high","rationale"
   assert.match(prompt, /Prefer candidates with direct topic mentions in user or assistant messages/);
   assert.match(prompt, /Candidates JSON:/);
 });
+
+test('memory search can ask a follow-up question inside the selected real Codex session', (t) => {
+  const fixture = makeFixtureRoots();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+
+  const targetId = '019cd444-4444-7444-8444-444444444444';
+  writeCodexSession(fixture.codexSessionsRoot, {
+    id: targetId,
+    startedAt: '2026-03-12T14:12:06.647Z',
+    cwd: '/tmp/dockerhub',
+    events: [
+      {
+        timestamp: '2026-03-12T14:12:07.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'O dockermt sumiu do meu dockerhub e das imagens locais.' }
+          ]
+        }
+      },
+      {
+        timestamp: '2026-03-12T14:12:08.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'agent_message',
+          message: 'Vamos procurar a imagem tanto no Docker Hub quanto no host local.'
+        }
+      }
+    ]
+  });
+
+  const binDir = path.join(fixture.root, 'bin');
+  const callsLog = path.join(fixture.root, 'codex-calls.log');
+  const searchLogsRoot = path.join(fixture.root, 'search-logs');
+  fs.mkdirSync(binDir, { recursive: true });
+
+writeExecutable(path.join(binDir, 'codex'), `#!/usr/bin/env bash
+set -euo pipefail
+mode="rerank"
+output=""
+args=("$@")
+idx=0
+while [ "$idx" -lt "$#" ]; do
+  arg="\${args[$idx]}"
+  if [ "$arg" = "--output-last-message" ]; then
+    idx=$((idx + 1))
+    output="\${args[$idx]}"
+  elif [ "$arg" = "resume" ]; then
+    mode="ask"
+  fi
+  idx=$((idx + 1))
+done
+printf '%s\\n' "$mode|$*" >> "$CODEX_LIVE_TEST_CALLS"
+if [ "$mode" = "ask" ]; then
+  printf '%s\\n' 'Concluímos que o dockermt não estava mais nas imagens locais nem no Docker Hub.' > "$output"
+else
+  cat >/dev/null
+  printf '%s\\n' '{"best_session_id":"${targetId}","confidence":"high","rationale":"stub-rationale","alternate_session_ids":[],"suggested_capture_target":null,"terms_used":["dockermt","dockerhub"]}' > "$output"
+fi
+`);
+
+  const out = runMemorySearchWithEnv(
+    fixture,
+    ['--to-codex', '--ask', 'o que concluímos sobre isso?', 'dockermt', 'dockerhub', 'imagens', 'locais'],
+    {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      CODEX_LIVE_TEST_CALLS: callsLog,
+      CODEX_LIVE_SEARCH_LOGS_ROOT: searchLogsRoot
+    }
+  );
+
+  assert.equal(out.selected_session_id, targetId);
+  assert.equal(out.action, 'ask');
+  assert.equal(out.asked_question, 'o que concluímos sobre isso?');
+  assert.match(out.answer, /dockermt não estava mais nas imagens locais nem no Docker Hub/i);
+  assert.equal(out.codex.best_session_id, targetId);
+
+  const calls = fs.readFileSync(callsLog, 'utf8').trim().split('\n');
+  assert.equal(calls.length, 2);
+  assert.match(calls[0], /^rerank\|exec /);
+  assert.match(calls[1], new RegExp(`^ask\\|exec .* resume ${targetId} o que concluímos sobre isso\\?$`));
+});

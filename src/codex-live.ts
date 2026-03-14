@@ -103,10 +103,14 @@ type SearchCandidate = {
   evidences: SearchEvidence[];
 };
 
+type SearchAction = 'none' | 'open' | 'capture' | 'watch' | 'ask';
+
 type SearchQueryOptions = {
   memory: string;
   toCodex: boolean;
   jsonOut: boolean;
+  action: SearchAction;
+  askPrompt: string | null;
   limit: number;
   candidateLimit: number;
   fromMs: number | null;
@@ -187,6 +191,7 @@ function usage(): void {
   console.log(`  ${dodgeBlue('codex-live session ls --theme dockermt --limit 10')}`);
   console.log(`  ${dodgeBlue('codex-live search "dockermt no dockerhub há uns 3 dias"')}`);
   console.log(`  ${dodgeBlue('codex-live search --to-codex "estávamos procurando o dockermt nas imagens locais e no dockerhub"')}`);
+  console.log(`  ${dodgeBlue('codex-live search --to-codex --ask "o que concluímos?" "dockermt nas imagens locais e no dockerhub"')}`);
   console.log(`  ${dodgeBlue('codex-live session use 1')}`);
   console.log(`  ${dodgeBlue('codex-live open')}`);
   console.log(`  ${dodgeBlue('codex-live capture 1 --focus --behind')}`);
@@ -205,6 +210,10 @@ function searchLogsRoot(): string {
   const override = (process.env.CODEX_LIVE_SEARCH_LOGS_ROOT ?? '').trim();
   if (override) return path.resolve(override);
   return path.join(BASE_DIR, 'logs', 'search');
+}
+
+function findSessionCatalogEntryById(sessionId: string): SessionListEntry | null {
+  return sessionCatalogEntries().find((row) => row.id.toLowerCase() === sessionId.toLowerCase()) ?? null;
 }
 
 function parseOpts(args: string[]): { opts: ParsedOpts; rest: string[] } {
@@ -883,11 +892,20 @@ function parseSearchQueryOptions(args: string[], cfg: LiveConfig, opts: ParsedOp
 
   let toCodex = false;
   let jsonOut = false;
+  let action = 'none' as SearchAction;
+  let askPrompt: string | null = null;
   let limit = 5;
   let candidateLimit = 8;
   let fromMs: number | null = null;
   let toMs: number | null = null;
   const memoryParts: string[] = [];
+
+  const setAction = (next: SearchAction) => {
+    if (action !== 'none' && action !== next) {
+      throw new Error('use apenas uma ação entre `--open`, `--capture`, `--watch` e `--ask`');
+    }
+    action = next;
+  };
 
   for (let i = 0; i < args.length; i += 1) {
     const a = args[i];
@@ -897,6 +915,26 @@ function parseSearchQueryOptions(args: string[], cfg: LiveConfig, opts: ParsedOp
     }
     if (a === '--json') {
       jsonOut = true;
+      continue;
+    }
+    if (a === '--open') {
+      setAction('open');
+      continue;
+    }
+    if (a === '--capture') {
+      setAction('capture');
+      continue;
+    }
+    if (a === '--watch') {
+      setAction('watch');
+      continue;
+    }
+    if (a === '--ask') {
+      const prompt = String(args[i + 1] ?? '').trim();
+      if (!prompt) throw new Error('--ask requer uma pergunta entre aspas');
+      setAction('ask');
+      askPrompt = prompt;
+      i += 1;
       continue;
     }
     if (a === '--limit') {
@@ -960,9 +998,14 @@ function parseSearchQueryOptions(args: string[], cfg: LiveConfig, opts: ParsedOp
   }
 
   const memory = memoryParts.join(' ').trim();
-  if (!memory) throw new Error('uso: codex-live search [--to-codex] [--json] [--limit N] "memória do assunto"');
+  if (!memory) {
+    throw new Error('uso: codex-live search [--to-codex] [--json] [--open|--capture|--watch|--ask "pergunta"] [--limit N] "memória do assunto"');
+  }
   if (fromMs !== null && toMs !== null && fromMs > toMs) {
     throw new Error('--from não pode ser maior que --to');
+  }
+  if (jsonOut && action !== 'none' && action !== 'ask') {
+    throw new Error('`--json` não pode ser combinado com `--open`, `--capture` ou `--watch`');
   }
 
   const repoDir = opts.repo ? resolveRepo(BASE_DIR, cfg, opts.repo) : null;
@@ -971,6 +1014,8 @@ function parseSearchQueryOptions(args: string[], cfg: LiveConfig, opts: ParsedOp
     memory,
     toCodex,
     jsonOut,
+    action,
+    askPrompt,
     limit,
     candidateLimit,
     fromMs,
@@ -1095,6 +1140,91 @@ function runCodexSearchDecision(memory: string, query: SearchQueryOptions, terms
     throw new Error(`falha ao consultar o Codex para reranqueamento: JSON inválido em ${outputPath}`);
   }
   return parsed;
+}
+
+function resolveSearchSelectedSession(candidates: SearchCandidate[], codexDecision: CodexSearchDecision | null): {
+  sessionId: string | null;
+  row: SessionListEntry | null;
+} {
+  const preferredId = codexDecision?.best_session_id?.trim() || '';
+  if (preferredId) {
+    const row = candidates.find((candidate) => candidate.row.id === preferredId)?.row
+      ?? findSessionCatalogEntryById(preferredId);
+    return { sessionId: preferredId, row };
+  }
+
+  const first = candidates[0]?.row ?? null;
+  return {
+    sessionId: first?.id ?? null,
+    row: first
+  };
+}
+
+function defaultSearchActionRepo(cfg: LiveConfig, query: SearchQueryOptions, row: SessionListEntry | null): string {
+  return query.repoDir || row?.repoDir || resolveRepo(BASE_DIR, cfg);
+}
+
+async function openSearchSelectedSession(
+  cfg: LiveConfig,
+  query: SearchQueryOptions,
+  sessionId: string,
+  row: SessionListEntry | null
+): Promise<number> {
+  const repo = defaultSearchActionRepo(cfg, query, row);
+  const callArgs: string[] = ['--repo', repo, '--', 'codex', 'resume', sessionId];
+  console.log('');
+  console.log(stage('Abrindo sessão encontrada:'));
+  console.log(`  repo=${file(repo)} session=${file(sessionId)}`);
+  return runInternal('codex-live-run.js', callArgs);
+}
+
+function runCodexSearchAsk(
+  cfg: LiveConfig,
+  query: SearchQueryOptions,
+  sessionId: string,
+  row: SessionListEntry | null,
+  prompt: string
+): string {
+  if (!commandExists('codex')) throw new Error('comando `codex` não encontrado no PATH');
+
+  const repo = defaultSearchActionRepo(cfg, query, row);
+  const searchDir = searchLogsRoot();
+  ensureDir(searchDir);
+  const token = `${nowCompactUtc()}__${Math.floor(Math.random() * 1_000_000)}`;
+  const outputPath = path.join(searchDir, `codex-search-ask-output-${token}.txt`);
+
+  const res = execCapture(
+    'codex',
+    [
+      'exec',
+      '--color',
+      'never',
+      '-s',
+      'read-only',
+      '-C',
+      repo,
+      '--skip-git-repo-check',
+      '--output-last-message',
+      outputPath,
+      'resume',
+      sessionId,
+      prompt
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+
+  if (res.code !== 0) {
+    throw new Error(`falha ao perguntar ao Codex sobre a sessão: ${shortText(res.stderr || res.stdout, 220)}`);
+  }
+  if (!fs.existsSync(outputPath)) {
+    throw new Error('falha ao perguntar ao Codex sobre a sessão: nenhuma resposta foi gerada');
+  }
+
+  const answer = fs.readFileSync(outputPath, 'utf8').trim();
+  if (!answer) {
+    throw new Error('falha ao perguntar ao Codex sobre a sessão: resposta vazia');
+  }
+  return answer;
 }
 
 function sessionRowsToCsv(rows: SessionJsonRow[]): string {
@@ -2107,13 +2237,17 @@ async function cmdSearch(args: string[]): Promise<number> {
   const cfg = loadConfig(BASE_DIR);
 
   if (opts.help || rest[0] === 'help') {
-    console.log('uso: codex-live search [--to-codex] [--json] [--limit N] [--candidate-limit N] [--days N|--hours N|--weeks N|--months N|--from DATA|--to DATA] "memória do assunto"');
+    console.log('uso: codex-live search [--to-codex] [--json] [--open|--capture|--watch|--ask "pergunta"] [--limit N] [--candidate-limit N] [--days N|--hours N|--weeks N|--months N|--from DATA|--to DATA] "memória do assunto"');
     console.log(`fonte: ${file('~/.codex/sessions')}`);
     console.log('obs: a busca local coleta candidatas no histórico real do Codex e `--to-codex` pede ao próprio Codex para reranquear essas candidatas.');
     console.log('exemplos:');
     console.log('  codex-live search "dockermt no dockerhub"');
     console.log('  codex-live search --days 3 "dockermt nas imagens locais"');
     console.log('  codex-live search --to-codex "estávamos procurando o dockermt há uns 3 dias no dockerhub"');
+    console.log('  codex-live search --to-codex --open "dockermt nas imagens locais e no dockerhub"');
+    console.log('  codex-live search --to-codex --capture "dockermt nas imagens locais e no dockerhub"');
+    console.log('  codex-live search --to-codex --watch "dockermt nas imagens locais e no dockerhub"');
+    console.log('  codex-live search --to-codex --ask "o que concluímos?" "dockermt nas imagens locais e no dockerhub"');
     console.log('  codex-live search --repo operpdf --json "certidao conselho reconciliar com despacho"');
     console.log('fluxo comum:');
     console.log('  1. codex-live search --to-codex "dockermt nas imagens locais e no dockerhub"');
@@ -2130,6 +2264,13 @@ async function cmdSearch(args: string[]): Promise<number> {
   if (query.toCodex) {
     codexDecision = runCodexSearchDecision(query.memory, query, terms, candidates);
   }
+  const selected = resolveSearchSelectedSession(candidates, codexDecision);
+
+  let askAnswer: string | null = null;
+  if (query.action === 'ask') {
+    if (!selected.sessionId) throw new Error('nenhuma sessão encontrada para `--ask`');
+    askAnswer = runCodexSearchAsk(cfg, query, selected.sessionId, selected.row, query.askPrompt || '');
+  }
 
   if (query.jsonOut) {
     console.log(JSON.stringify({
@@ -2140,6 +2281,10 @@ async function cmdSearch(args: string[]): Promise<number> {
       explicit_to: query.toMs !== null ? new Date(query.toMs).toISOString() : null,
       terms: terms,
       count: jsonCandidates.length,
+      selected_session_id: selected.sessionId,
+      action: query.action === 'none' ? null : query.action,
+      asked_question: query.askPrompt,
+      answer: askAnswer,
       candidates: jsonCandidates,
       codex: codexDecision
     }, null, 2));
@@ -2152,6 +2297,9 @@ async function cmdSearch(args: string[]): Promise<number> {
   if (terms.length > 0) console.log(`  termos=${dim(terms.map((term) => term.value).join(', '))}`);
   if (query.inferredFromMs !== null) {
     console.log(`  tempo_inferido_desde=${dim(new Date(query.inferredFromMs).toISOString())}`);
+  }
+  if (selected.sessionId) {
+    console.log(`  sessão_selecionada=${file(selected.sessionId)}`);
   }
 
   if (candidates.length === 0) {
@@ -2181,6 +2329,25 @@ async function cmdSearch(args: string[]): Promise<number> {
     if (codexDecision.suggested_capture_target) {
       console.log(`  capture=${dim(`codex-live capture ${codexDecision.suggested_capture_target} --focus --behind`)}`);
     }
+  }
+
+  if (askAnswer) {
+    console.log('');
+    console.log(stage('Resposta sobre a sessão:'));
+    console.log(askAnswer);
+  }
+
+  if (query.action === 'capture') {
+    if (!selected.sessionId) throw new Error('nenhuma sessão encontrada para `--capture`');
+    return cmdCapture([selected.sessionId, '--focus', '--behind']);
+  }
+  if (query.action === 'watch') {
+    if (!selected.sessionId) throw new Error('nenhuma sessão encontrada para `--watch`');
+    return cmdMonitor('watch', [selected.sessionId]);
+  }
+  if (query.action === 'open') {
+    if (!selected.sessionId) throw new Error('nenhuma sessão encontrada para `--open`');
+    return openSearchSelectedSession(cfg, query, selected.sessionId, selected.row);
   }
 
   return 0;

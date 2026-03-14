@@ -1,17 +1,25 @@
 # Estrutura real de `~/.codex/sessions`
 
-Esta documentacao descreve a estrutura observada do historico real do Codex em `~/.codex/sessions`.
+Esta documentacao descreve a estrutura observada do historico real do Codex e como o `codex-live` a utiliza.
 
-Ela serve de base para busca, captura, watch e monitoramento no `codex-live`.
+## Papel no repositorio
 
-## Escopo
+`~/.codex/sessions` e a fonte de verdade de sessoes do usuario.
 
-Esta doc cobre:
-- layout em disco
-- tipos de registro observados
-- campos relevantes para busca e apresentacao
-- anomalias reais do corpus
-- implicacoes praticas para parser
+O `codex-live` usa esse espaco para:
+
+- catalogar sessoes com `session` e `sessions`
+- recuperar sessoes por memoria livre com `search`
+- inspecionar eventos com `capture`
+- acompanhar sessoes com `watch`, `open-watch`, `popup` e `tmux`
+- retomar sessoes com `open`, `codex` e `session attach`
+
+Nao entram aqui:
+
+- `./logs/runs`
+- `./logs/search`
+
+Esses diretorios sao apenas artefatos operacionais locais.
 
 ## Layout em disco
 
@@ -28,23 +36,10 @@ Exemplo:
 ```
 
 Observacoes:
+
 - a arvore por data e consistente
-- o UUID da sessao aparece no nome do arquivo
-- o primeiro `session_meta.payload.id` normalmente bate com o UUID do nome do arquivo
-
-## Snapshot da inspecao
-
-Inspecao feita em `2026-03-13T07:44:30Z`.
-
-- raiz observada: `~/.codex/sessions`
-- arquivos `.jsonl`: `816`
-- volume total: `14,301,752,588` bytes
-- arquivos vazios: `1`
-- maior arquivo observado: `5,106,205,729` bytes
-
-Consequencia pratica:
-- parser de catalogo e captura precisa tolerar arquivos grandes
-- leitura integral de arquivo nao pode ser pressuposto do formato
+- o `session_id` aparece no nome do arquivo
+- o primeiro `session_meta.payload.id` normalmente coincide com o `session_id` do nome do arquivo
 
 ## Forma geral do JSONL
 
@@ -68,7 +63,83 @@ Tipos de topo observados:
 | `session_meta` | 883 |
 | `compacted` | 2 |
 
-## Sequencia tipica
+## Campos mais uteis para o `codex-live`
+
+### Identidade e contexto
+
+- `session_meta.payload.id`
+- `session_meta.payload.cwd`
+- `session_meta.payload.timestamp`
+- `session_meta.payload.git.branch`
+- `session_meta.payload.git.repository_url`
+
+Uso pratico:
+
+- montar catalogo
+- inferir repositorio
+- ordenar por tempo
+
+### Evidencia textual forte
+
+- `event_msg.payload.type=user_message`
+- `event_msg.payload.type=agent_message`
+- `response_item.payload.type=message`
+- `response_item.payload.role=user|assistant`
+- `response_item.payload.content[].type=input_text|output_text`
+
+Uso pratico:
+
+- busca por assunto
+- `capture --focus`
+- trechos usados pelo `search --to-codex`
+- perguntas com `search --ask`
+
+### Evidencia textual fraca
+
+- `turn_context`
+- `agent_reasoning`
+- `function_call`
+- `function_call_output`
+
+Uso pratico:
+
+- diagnostico
+- contexto complementar
+- pistas secundarias de busca
+
+## Como cada comando usa esse espaco
+
+### `session ls`
+
+- monta um catalogo a partir de `session_meta`
+- complementa tema com mensagem inicial e texto observado
+- aplica filtros por tema, tempo e proximidade
+
+### `search`
+
+- extrai termos da memoria do usuario
+- procura candidatas no historico real
+- coleta evidencias de tema e conteudo
+- opcionalmente pede ao proprio Codex para reranquear
+- pode agir sobre a melhor sessao encontrada:
+  - `--open`
+  - `--capture`
+  - `--watch`
+  - `--ask`
+
+### `capture`
+
+- resolve `last`, `<n>`, `<session_id>` ou caminho de arquivo
+- le os ultimos eventos da sessao
+- pode filtrar para foco e acompanhar em `--follow`
+
+### `watch` e familia
+
+- usam a mesma resolucao de alvo de `capture`
+- seguem a sessao real do Codex
+- nunca dependem de um espaco de sessao local paralelo
+
+## Sequencia tipica de uma sessao
 
 Sequencia frequente em sessoes recentes:
 
@@ -81,159 +152,9 @@ Sequencia frequente em sessoes recentes:
 7. `response_item` `reasoning`
 8. `event_msg` `agent_message`
 9. `response_item` com `message` de `assistant`
-10. chamadas de ferramenta, saidas e token accounting
+10. chamadas de ferramenta e saidas
 
 Essa ordem e comum, mas nao deve ser tratada como garantia absoluta.
-
-## `session_meta`
-
-Campos frequentes observados:
-
-- `id`
-- `timestamp`
-- `cwd`
-- `originator`
-- `cli_version`
-- `source`
-- `model_provider`
-- `base_instructions`
-- `git`
-- `agent_nickname`
-- `agent_role`
-- `forked_from_id`
-
-Subcampos relevantes:
-
-- `git.commit_hash`
-- `git.branch`
-- `git.repository_url`
-- `base_instructions.text`
-
-Observacoes:
-- `source` pode ser string como `cli`, `exec` ou `vscode`
-- `source` tambem pode ser objeto, especialmente em sessoes de subagente
-
-Exemplo observado de `source` estruturado:
-
-```json
-{
-  "source": {
-    "subagent": {
-      "thread_spawn": {
-        "parent_thread_id": "...",
-        "depth": 1,
-        "agent_nickname": "Lorentz",
-        "agent_role": "explorer"
-      }
-    }
-  }
-}
-```
-
-## `turn_context`
-
-Campos frequentes:
-
-- `cwd`
-- `approval_policy`
-- `sandbox_policy`
-- `model`
-- `personality`
-- `collaboration_mode`
-- `effort`
-- `summary`
-- `user_instructions`
-- `truncation_policy`
-- `turn_id`
-- `developer_instructions`
-- `current_date`
-- `timezone`
-- `realtime_active`
-
-Uso pratico:
-- bom para diagnostico
-- bom para informacao tecnica complementar
-- nao deve ser a base principal de busca por assunto
-
-## `event_msg`
-
-Subtipos observados:
-
-| payload.type | contagem observada |
-|---|---:|
-| `token_count` | 24,964 |
-| `agent_reasoning` | 11,346 |
-| `agent_message` | 1,936 |
-| `user_message` | 1,500 |
-| `task_started` | 298 |
-| `task_complete` | 139 |
-| `turn_aborted` | 103 |
-| `entered_review_mode` | 7 |
-| `exited_review_mode` | 7 |
-
-Campos mais uteis para busca e evidencia:
-
-- `user_message.message`
-- `agent_message.message`
-- `agent_reasoning.text`
-
-## `response_item`
-
-Subtipos observados:
-
-| payload.type | contagem observada |
-|---|---:|
-| `function_call` | 11,808 |
-| `function_call_output` | 11,610 |
-| `reasoning` | 11,425 |
-| `message` | 5,171 |
-| `custom_tool_call` | 453 |
-| `custom_tool_call_output` | 452 |
-| `ghost_snapshot` | 368 |
-| `web_search_call` | 87 |
-
-No subtipo `message`, os papeis mais frequentes foram:
-
-| role | contagem observada |
-|---|---:|
-| `assistant` | 1081 |
-| `user` | 579 |
-| `developer` | 357 |
-
-Partes mais comuns em `message.content`:
-
-| part.type | contagem observada |
-|---|---:|
-| `input_text` | 1327 |
-| `output_text` | 1081 |
-
-Observacoes:
-- `function_call.arguments` costuma vir como string JSON serializada
-- `function_call_output.output` pode ser grande
-
-## Tipos raros
-
-### `response_item:ghost_snapshot`
-
-Observado com `ghost_commit` contendo:
-
-- `id`
-- `parent`
-- `preexisting_untracked_files`
-- `preexisting_untracked_dirs`
-
-### `compacted`
-
-Observado em poucos casos:
-
-```json
-{
-  "type": "compacted",
-  "payload": {
-    "message": "..."
-  }
-}
-```
 
 ## Anomalias reais do corpus
 
@@ -242,6 +163,7 @@ Observado em poucos casos:
 Existe pelo menos um `.jsonl` com tamanho zero.
 
 Implicacao:
+
 - o parser deve aceitar arquivo vazio sem falhar
 
 ### Arquivos gigantes
@@ -249,32 +171,22 @@ Implicacao:
 Existe pelo menos um arquivo maior que `5 GB`.
 
 Implicacao:
-- catalogo, capture e watch devem funcionar sem depender de leitura integral
+
+- catalogo, capture e watch nao podem depender de leitura integral
 
 ### Multiplo `session_meta` no mesmo arquivo
 
-Em `56` arquivos o head observado ja contem mais de um `session_meta`.
+Em parte do corpus observado, um mesmo arquivo pode conter mais de um `session_meta`.
 
 Implicacao:
-- nao se deve assumir exatamente um `session_meta` por arquivo
-- o nome do arquivo e o primeiro `session_meta` sao as melhores referencias de identidade
 
-## Campos prioritarios para busca
+- nao assumir exatamente um `session_meta` por arquivo
+- nome do arquivo e primeiro `session_meta` sao as melhores referencias de identidade
 
-Para busca por memoria, tema ou recencia, os campos mais uteis foram:
+## Consequencias praticas para implementacao
 
-1. `session_meta.payload.timestamp`
-2. `session_meta.payload.cwd`
-3. `event_msg.user_message.message`
-4. `response_item.message` com `role=user`
-5. `response_item.message` com `role=assistant`
-6. nome do arquivo e `session_id`
-
-## Implicacoes para o `codex-live`
-
-Direcao adotada:
-- `session`, `capture`, `watch`, `open-watch`, `popup` e `tmux` trabalham sobre `~/.codex/sessions`
-- `exec` e `flow` nao criam sessoes; apenas gravam logs auxiliares em `./logs/runs`
-- selecao de sessao para monitoramento usa `last`, `<n>`, `<session_id>` ou caminho de `.jsonl`
-
-Se o formato real do Codex mudar, esta documentacao deve ser atualizada com nova inspecao do proprio corpus.
+- sessao do usuario deve ser representada a partir do arquivo real do Codex
+- logs locais sao auxiliares e devem continuar separados
+- `search` deve privilegiar evidencia de `user_message` e `assistant message`
+- `capture` e `watch` devem continuar tolerantes a arquivos muito grandes
+- `search --ask` deve retomar a sessao real, nao inventar um contexto paralelo

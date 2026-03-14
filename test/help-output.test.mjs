@@ -30,6 +30,7 @@ test('main help explains that monitoramento now reads real Codex sessions', () =
   assert.match(out.stdout, /session, sessions, capture, watch, open-watch, popup e tmux leem ~\/\.codex\/sessions/);
   assert.match(out.stdout, /exec e flow apenas gravam logs auxiliares em \.\/logs\/runs/);
   assert.match(out.stdout, /codex-live search "dockermt no dockerhub há uns 3 dias"/);
+  assert.match(out.stdout, /codex-live search --to-codex --ask "o que concluímos\?"/);
   assert.match(out.stdout, /codex-live session ls --theme dockermt --limit 10/);
   assert.match(out.stdout, /codex-live open-watch 1/);
   assert.match(out.stdout, /fluxos úteis:/);
@@ -65,6 +66,7 @@ test('repo, watch, search and capture help show workflow examples against real C
   assert.equal(searchOut.status, 0, searchOut.stderr || searchOut.stdout);
   assert.match(searchOut.stdout, /fluxo comum:/);
   assert.match(searchOut.stdout, /codex-live capture <session_id> --focus --behind/);
+  assert.match(searchOut.stdout, /codex-live search --to-codex --ask "o que concluímos\?"/);
 
   const captureOut = runCli(['capture', '--help']);
   assert.equal(captureOut.status, 0, captureOut.stderr || captureOut.stdout);
