@@ -24,7 +24,8 @@ function main() {
         spawnSync('tmux', ['set-option', '-u', '@watch_pane'], { stdio: 'ignore' });
         return 0;
     }
-    const cmd = `cd ${BASE_DIR} && ${process.execPath} ${BASE_DIR}/dist/codex-live-watch.js current`;
+    const configured = tmux(['show-options', '-qv', '@codex_watch_cmd']).out;
+    const cmd = configured || `cd ${BASE_DIR} && ${process.execPath} ${BASE_DIR}/dist/codex-live-watch.js last`;
     const split = tmux(['split-window', '-v', '-l', '30%', '-P', '-F', '#{pane_id}', cmd]);
     if (split.code !== 0 || !split.out)
         return 1;

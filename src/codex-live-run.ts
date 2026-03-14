@@ -2,13 +2,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { stage, cmd as cmdColor, ok, fail, file } from './lib/colors.js';
-import { baseDirFromImportMeta, ensureDir, nowCompactUtc, nowIso, shellJoin, updateCurrentSymlink } from './lib/runtime.js';
+import { baseDirFromImportMeta, ensureDir, nowCompactUtc, nowIso, shellJoin } from './lib/runtime.js';
 import { commandExists, runAndCapture } from './lib/proc.js';
 
 const BASE_DIR = baseDirFromImportMeta(import.meta.url);
 
 function usage(): void {
-  console.log(`Uso:\n  codex-live-run [--session <id>] [--repo <path>] -- <comando> [args...]\n  codex-live-run [--session <id>] [--repo <path>] <comando> [args...]`);
+  console.log(`Uso:\n  codex-live-run [--run <id>] [--repo <path>] -- <comando> [args...]\n  codex-live-run [--run <id>] [--repo <path>] <comando> [args...]`);
 }
 
 function appendLine(filePath: string, line: string): void {
@@ -24,17 +24,17 @@ function appendMultiline(filePath: string, prefix: string, value: string): void 
   }
 }
 
-function parseArgs(argv: string[]): { sessionId?: string; repoDir: string; cmd: string[] } {
-  let sessionId: string | undefined;
+function parseArgs(argv: string[]): { runId?: string; repoDir: string; cmd: string[] } {
+  let runId: string | undefined;
   let repoDir = process.cwd();
   const args = [...argv];
 
   while (args.length > 0) {
     const head = args[0];
-    if (head === '--session') {
+    if (head === '--run') {
       args.shift();
-      if (args.length === 0) throw new Error('--session exige valor');
-      sessionId = args.shift();
+      if (args.length === 0) throw new Error('--run exige valor');
+      runId = args.shift();
       continue;
     }
     if (head === '--repo') {
@@ -55,23 +55,21 @@ function parseArgs(argv: string[]): { sessionId?: string; repoDir: string; cmd: 
   }
 
   if (args.length === 0) throw new Error('faltou comando');
-  return { sessionId, repoDir, cmd: args };
+  return { runId, repoDir, cmd: args };
 }
 
 async function main(): Promise<number> {
-  const { sessionId: requestedSessionId, repoDir, cmd } = parseArgs(process.argv.slice(2));
-  const sessionId = requestedSessionId || `${nowCompactUtc()}__${Math.floor(Math.random() * 1_000_000)}`;
+  const { runId: requestedRunId, repoDir, cmd } = parseArgs(process.argv.slice(2));
+  const runId = requestedRunId || `${nowCompactUtc()}__${Math.floor(Math.random() * 1_000_000)}`;
 
-  const sessionDir = path.join(BASE_DIR, 'sessions', sessionId);
-  ensureDir(sessionDir);
-  ensureDir(path.join(BASE_DIR, 'sessions'));
-  updateCurrentSymlink(BASE_DIR, sessionDir);
+  const runDir = path.join(BASE_DIR, 'logs', 'runs', runId);
+  ensureDir(runDir);
 
-  const commandsLog = path.join(sessionDir, 'commands.log');
-  const outputLog = path.join(sessionDir, 'output.log');
-  const timelineLog = path.join(sessionDir, 'timeline.log');
-  const eventsLog = path.join(sessionDir, 'events.jsonl');
-  const metaJson = path.join(sessionDir, 'meta.json');
+  const commandsLog = path.join(runDir, 'commands.log');
+  const outputLog = path.join(runDir, 'output.log');
+  const timelineLog = path.join(runDir, 'timeline.log');
+  const eventsLog = path.join(runDir, 'events.jsonl');
+  const metaJson = path.join(runDir, 'meta.json');
 
   const startedAt = nowIso();
   const pidNow = process.pid;
@@ -79,7 +77,7 @@ async function main(): Promise<number> {
 
   fs.writeFileSync(
     metaJson,
-    `${JSON.stringify({ session_id: sessionId, repo_dir: repoDir, started_at: startedAt, runner_pid: pidNow }, null, 2)}\n`,
+    `${JSON.stringify({ run_id: runId, repo_dir: repoDir, started_at: startedAt, runner_pid: pidNow }, null, 2)}\n`,
     'utf8'
   );
 
@@ -126,7 +124,7 @@ async function main(): Promise<number> {
   appendLine(timelineLog, `[${endedAt}] [EXIT] code=${code} status=${statusLabel} :: ${cmdPretty}`);
   appendLine(eventsLog, JSON.stringify({ ts: endedAt, event: 'command_end', exit: code, status: statusLabel, cmd: cmdPretty }));
 
-  console.log(stage('Sessão:'), file(sessionDir));
+  console.log(stage('Logs:'), file(runDir));
   return code;
 }
 

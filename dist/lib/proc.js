@@ -14,6 +14,18 @@ export function execCapture(cmd, args, options = {}) {
         stderr: res.stderr ?? ''
     };
 }
+export function execCaptureInput(cmd, args, input, options = {}) {
+    const res = spawnSync(cmd, args, {
+        ...options,
+        encoding: 'utf8',
+        input
+    });
+    return {
+        code: res.status ?? 1,
+        stdout: res.stdout ?? '',
+        stderr: res.stderr ?? ''
+    };
+}
 export function runProcess(cmd, args, options = {}) {
     return new Promise((resolve) => {
         const child = spawn(cmd, args, {

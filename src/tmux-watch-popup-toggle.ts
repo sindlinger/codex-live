@@ -29,7 +29,8 @@ function main(): number {
     return 0;
   }
 
-  const cmd = `cd ${BASE_DIR} && ${process.execPath} ${BASE_DIR}/dist/codex-live-watch.js current`;
+  const configured = tmux(['show-options', '-qv', '@codex_watch_cmd']).out;
+  const cmd = configured || `cd ${BASE_DIR} && ${process.execPath} ${BASE_DIR}/dist/codex-live-watch.js last`;
   const pop = tmux(['display-popup', '-w', '70%', '-h', '55%', '-E', cmd, '-P', '-F', '#{pane_id}']);
   if (pop.code !== 0 || !pop.out) return 1;
 

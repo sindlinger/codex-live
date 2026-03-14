@@ -29,9 +29,9 @@ function shDoubleQuote(value: string): string {
   return `"${escaped}"`;
 }
 
-function buildWatchInnerCommand(sessionId: string, launcher: string, ownerTty: string): string {
+function buildWatchInnerCommand(target: string, launcher: string, ownerTty: string): string {
   const ownerPid = process.pid;
-  const ownerCmd = `codex-live open ${sessionId}`;
+  const ownerCmd = `codex-live open-watch ${target}`;
   const envPrefix = [
     'CODEX_WATCH_WINDOW=1',
     `CODEX_WATCH_LAUNCHER=${shDoubleQuote(launcher)}`,
@@ -39,15 +39,15 @@ function buildWatchInnerCommand(sessionId: string, launcher: string, ownerTty: s
     `CODEX_WATCH_OPEN_TTY=${shDoubleQuote(ownerTty)}`,
     `CODEX_WATCH_OWNER_CMD=${shDoubleQuote(ownerCmd)}`
   ].join(' ');
-  const watchExec = `${shDoubleQuote(process.execPath)} ${shDoubleQuote(`${BASE_DIR}/dist/codex-live-watch.js`)} ${shDoubleQuote(sessionId)}`;
+  const watchExec = `${shDoubleQuote(process.execPath)} ${shDoubleQuote(`${BASE_DIR}/dist/codex-live-watch.js`)} ${shDoubleQuote(target)}`;
   return `cd ${shDoubleQuote(BASE_DIR)} && ${envPrefix} ${watchExec}`;
 }
 
-function buildOpenWatchScriptCommand(sessionId: string, launcher: string, ownerTty: string): string {
+function buildOpenWatchScriptCommand(target: string, launcher: string, ownerTty: string): string {
   const script = `${BASE_DIR}/scripts/open-watch-window.sh`;
   return shellJoin([
     script,
-    sessionId,
+    target,
     launcher,
     String(process.pid),
     ownerTty,
@@ -55,7 +55,7 @@ function buildOpenWatchScriptCommand(sessionId: string, launcher: string, ownerT
   ]);
 }
 
-function openInTmux(sessionId: string, ownerTty: string): boolean {
+function openInTmux(target: string, ownerTty: string): boolean {
   if (!commandExists('tmux')) return false;
   const client = spawnSync('tmux', ['display-message', '-p', '#{client_tty}'], {
     encoding: 'utf8',
@@ -67,7 +67,7 @@ function openInTmux(sessionId: string, ownerTty: string): boolean {
   );
   if ((client.status ?? 1) !== 0 || !clientTty) return false;
 
-  const popupCmd = buildOpenWatchScriptCommand(sessionId, 'tmux-popup', ownerTty);
+  const popupCmd = buildOpenWatchScriptCommand(target, 'tmux-popup', ownerTty);
 
   // Prefer popup when there is a current client.
   let res = spawnSync('tmux', ['display-popup', '-E', '-w', '70%', '-h', '55%', popupCmd], {
@@ -78,7 +78,7 @@ function openInTmux(sessionId: string, ownerTty: string): boolean {
   if ((res.status ?? 1) === 0) return true;
 
   // Fallback to a new tmux window if popup is unavailable.
-  const newWindowCmd = buildOpenWatchScriptCommand(sessionId, 'tmux-window', ownerTty);
+  const newWindowCmd = buildOpenWatchScriptCommand(target, 'tmux-window', ownerTty);
   res = spawnSync('tmux', ['new-window', '-n', 'codex-watch', newWindowCmd], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe']
@@ -87,13 +87,13 @@ function openInTmux(sessionId: string, ownerTty: string): boolean {
   return (res.status ?? 1) === 0;
 }
 
-function openLinuxTerminal(sessionId: string, ownerTty: string): boolean {
+function openLinuxTerminal(target: string, ownerTty: string): boolean {
   const hasDisplay = Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
   if (!hasDisplay) {
     appendOpenLog('open_linux_terminal skip=no_display');
     return false;
   }
-  const watchCmd = `${buildWatchInnerCommand(sessionId, 'linux-terminal', ownerTty)}; exec bash`;
+  const watchCmd = `${buildWatchInnerCommand(target, 'linux-terminal', ownerTty)}; exec bash`;
 
   if (commandExists('gnome-terminal')) {
     const res = spawnSync('gnome-terminal', ['--', 'bash', '-lc', watchCmd], {
@@ -117,31 +117,31 @@ function openLinuxTerminal(sessionId: string, ownerTty: string): boolean {
 }
 
 function main(): number {
-  const sessionId = process.argv[2] ?? 'current';
+  const target = process.argv[2] ?? 'last';
   const ownerTty = getCurrentTty();
-  appendOpenLog(`open_start pid=${process.pid} session=${sessionId} owner_tty=${ownerTty}`);
+  appendOpenLog(`open_start pid=${process.pid} target=${target} owner_tty=${ownerTty}`);
 
   const prune = closeActiveWatchWindows(BASE_DIR);
   console.log(stage('[watch-windows]'), `abertas antes=${prune.before} fechadas=${prune.closed.length} falhas=${prune.failed.length} restantes=${prune.remaining.length}`);
   if (prune.closed.length > 0) {
     for (const w of prune.closed) {
-      console.log(`  ${dim('-')} closed pid=${w.pid} session=${w.sessionId} launcher=${w.launcher} owner_tty=${w.ownerTty}`);
+      console.log(`  ${dim('-')} closed pid=${w.pid} target=${w.sessionId} launcher=${w.launcher} owner_tty=${w.ownerTty}`);
     }
   }
   if (prune.failed.length > 0) {
     for (const w of prune.failed) {
-      console.log(`  ${warn('!')} failed pid=${w.pid} session=${w.sessionId} launcher=${w.launcher} owner_tty=${w.ownerTty}`);
+      console.log(`  ${warn('!')} failed pid=${w.pid} target=${w.sessionId} launcher=${w.launcher} owner_tty=${w.ownerTty}`);
     }
   }
 
-  if (openInTmux(sessionId, ownerTty)) {
+  if (openInTmux(target, ownerTty)) {
     appendOpenLog('open_result launcher=tmux status=ok');
     console.log(ok('Janela de watch aberta no tmux (WSL).'));
     console.log(dim(`log: ${OPEN_LOG}`));
     return 0;
   }
 
-  if (openLinuxTerminal(sessionId, ownerTty)) {
+  if (openLinuxTerminal(target, ownerTty)) {
     appendOpenLog('open_result launcher=linux-terminal status=ok');
     console.log(ok('Janela de watch aberta em terminal Linux (WSL).'));
     console.log(dim(`log: ${OPEN_LOG}`));
@@ -150,7 +150,7 @@ function main(): number {
 
   appendOpenLog('open_result launcher=none status=fail');
   console.log(warn('Não consegui abrir nova janela automaticamente. Rode manualmente:'));
-  console.log(shellJoin(['cd', BASE_DIR, '&&', process.execPath, `${BASE_DIR}/dist/codex-live-watch.js`, sessionId]));
+  console.log(shellJoin(['cd', BASE_DIR, '&&', process.execPath, `${BASE_DIR}/dist/codex-live-watch.js`, target]));
   console.log(dim(`log: ${OPEN_LOG}`));
   return 1;
 }

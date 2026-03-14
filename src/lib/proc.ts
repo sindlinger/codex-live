@@ -23,6 +23,24 @@ export function execCapture(cmd: string, args: string[], options: SpawnOptions =
   };
 }
 
+export function execCaptureInput(
+  cmd: string,
+  args: string[],
+  input: string,
+  options: SpawnOptions = {}
+): ExecResult {
+  const res = spawnSync(cmd, args, {
+    ...options,
+    encoding: 'utf8',
+    input
+  });
+  return {
+    code: res.status ?? 1,
+    stdout: res.stdout ?? '',
+    stderr: res.stderr ?? ''
+  };
+}
+
 export function runProcess(cmd: string, args: string[], options: SpawnOptions = {}): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, {

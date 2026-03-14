@@ -9,15 +9,15 @@ function quoteSingle(value) {
 }
 function parseArgs(argv) {
     const out = {
-        sessionId: 'current',
+        target: 'last',
         width: process.env.CODEX_POPUP_WIDTH || '92%',
         height: process.env.CODEX_POPUP_HEIGHT || '85%'
     };
     const args = [...argv];
     while (args.length > 0) {
         const a = args.shift();
-        if (a === '--session-id' || a === '--section-id') {
-            out.sessionId = args.shift();
+        if (a === '--session' || a === '--session-id' || a === '--section-id') {
+            out.target = args.shift();
             continue;
         }
         if (a === '--width') {
@@ -29,10 +29,10 @@ function parseArgs(argv) {
             continue;
         }
         if (a === '--help' || a === '-h') {
-            console.log('uso: codex-popup [--session-id <id>] [--width <92%>] [--height <85%>]');
+            console.log('uso: codex-popup [last|<n>|<session_id>|<arquivo.jsonl>] [--session <id>] [--width <92%>] [--height <85%>]');
             process.exit(0);
         }
-        out.sessionId = a;
+        out.target = a;
     }
     return out;
 }
@@ -44,7 +44,7 @@ function tryTmuxPopup(args) {
     const probe = spawnSync('tmux', ['display-popup', '-E', "bash -lc 'echo tmux_popup_probe >/dev/null'"], { stdio: 'ignore' });
     if ((probe.status ?? 1) !== 0)
         return false;
-    const watchCmd = `cd ${BASE_DIR} && ${quoteSingle(process.execPath)} ${quoteSingle(path.join(BASE_DIR, 'dist', 'codex-live-watch.js'))} ${quoteSingle(args.sessionId)}`;
+    const watchCmd = `cd ${BASE_DIR} && ${quoteSingle(process.execPath)} ${quoteSingle(path.join(BASE_DIR, 'dist', 'codex-live-watch.js'))} ${quoteSingle(args.target)}`;
     const popupCmd = `bash -lc ${quoteSingle(watchCmd)}`;
     const res = spawnSync('tmux', ['display-popup', '-w', args.width, '-h', args.height, '-E', popupCmd], {
         stdio: 'inherit'
@@ -56,7 +56,7 @@ function main() {
     if (tryTmuxPopup(args))
         return 0;
     const openWatch = path.join(BASE_DIR, 'dist', 'codex-live-open-watch.js');
-    const res = spawnSync(process.execPath, [openWatch, args.sessionId], { stdio: 'inherit' });
+    const res = spawnSync(process.execPath, [openWatch, args.target], { stdio: 'inherit' });
     return res.status ?? 1;
 }
 process.exit(main());

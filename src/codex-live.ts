@@ -2,10 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { baseDirFromImportMeta, nowCompactUtc } from './lib/runtime.js';
+import { baseDirFromImportMeta, ensureDir, nowCompactUtc } from './lib/runtime.js';
 import { loadConfig, saveConfig, resolveRepo, type LiveConfig } from './lib/config.js';
-import { resolveSessionId } from './lib/sessions.js';
-import { commandExists, execCapture, runProcess } from './lib/proc.js';
+import { commandExists, execCapture, execCaptureInput, runProcess } from './lib/proc.js';
 import { stage, dodgeBlue, ok, fail, file, dim, warn } from './lib/colors.js';
 import { readBuildInfo } from './lib/build-info.js';
 import { listActiveWatchWindows } from './lib/watch-windows.js';
@@ -86,32 +85,94 @@ type SessionSearchMatches = {
   codexFiles: Set<string>;
 };
 
+type SearchTerm = {
+  value: string;
+  kind: 'phrase' | 'token';
+};
+
+type SearchEvidence = {
+  term: string;
+  source: 'theme' | 'content';
+  snippet: string;
+};
+
+type SearchCandidate = {
+  row: SessionListEntry;
+  score: number;
+  matchedTerms: string[];
+  evidences: SearchEvidence[];
+};
+
+type SearchQueryOptions = {
+  memory: string;
+  toCodex: boolean;
+  jsonOut: boolean;
+  limit: number;
+  candidateLimit: number;
+  fromMs: number | null;
+  toMs: number | null;
+  inferredFromMs: number | null;
+  repoDir: string | null;
+};
+
+type CodexSearchDecision = {
+  best_session_id: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  rationale: string;
+  alternate_session_ids: string[];
+  suggested_capture_target: string | null;
+  terms_used: string[];
+};
+
+const CODEX_SEARCH_PROTOCOL = [
+  'You are a session investigator for the real Codex history stored under ~/.codex/sessions.',
+  'The user memory is imperfect. Treat it as a clue, not as literal truth.',
+  'Do not invent sessions. Work only with the candidate sessions and evidence supplied in this prompt.',
+  '',
+  'Real source structure:',
+  '- files live under ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl',
+  '- relevant top-level record types include session_meta, turn_context, event_msg, response_item, compacted',
+  '- the most reliable topic evidence usually comes from event_msg payloads with user_message or agent_message',
+  '- response_item payloads with type=message and role=user|assistant are also strong evidence',
+  '- theme, repo_dir, and timing are supporting signals, but weaker than direct user/assistant text',
+  '',
+  'Investigation procedure:',
+  '1. Read the user memory as a noisy recollection of the session.',
+  '2. Compare the memory against each candidate using topic match, timing hints, repo context, and evidence snippets.',
+  '3. Prefer candidates with direct topic mentions in user or assistant messages over generic theme similarity.',
+  '4. Penalize candidates that are only meta-discussions about finding a session, unless the memory clearly points to that.',
+  '5. If none of the candidates is convincing, return best_session_id as null and explain why.',
+  '',
+  'Return the final answer strictly following the provided JSON schema.'
+].join('\n');
+
 function usage(): void {
   console.log(`codex-live v${BUILD_INFO.version} (${BUILD_INFO.builtAtUtc})`);
-  console.log('CLI para histórico do Codex, execução com logs locais e observabilidade.\n');
+  console.log('CLI para histórico real do Codex, captura e execução auxiliar.\n');
   console.log(`uso: ${dodgeBlue('codex-live')} [opções] <comando>\n`);
 
   console.log('modelo:');
-  console.log(`  ${dim('-')} ${dodgeBlue('session')}, ${dodgeBlue('sessions')} e ${dodgeBlue('capture')} leem o histórico real em ${file('~/.codex/sessions')}`);
-  console.log(`  ${dim('-')} ${dodgeBlue('exec')}, ${dodgeBlue('flow')}, ${dodgeBlue('watch')}, ${dodgeBlue('open-watch')}, ${dodgeBlue('popup')} e ${dodgeBlue('tmux')} usam logs locais em ${file('./sessions')}`);
+  console.log(`  ${dim('-')} ${dodgeBlue('session')}, ${dodgeBlue('sessions')}, ${dodgeBlue('capture')}, ${dodgeBlue('watch')}, ${dodgeBlue('open-watch')}, ${dodgeBlue('popup')} e ${dodgeBlue('tmux')} leem ${file('~/.codex/sessions')}`);
+  console.log(`  ${dim('-')} ${dodgeBlue('exec')} e ${dodgeBlue('flow')} apenas gravam logs auxiliares em ${file('./logs/runs')}`);
   console.log(`  ${dim('-')} ${dodgeBlue('open')} é um alias interativo de ${dodgeBlue('codex')}\n`);
 
   console.log('histórico do Codex:');
   console.log(`  ${dodgeBlue('session')}${dim('     Busca, exporta e seleciona sessões reais do Codex')}`);
   console.log(`  ${dodgeBlue('sessions')}${dim('    Alias de `session ls` com filtros')}`);
+  console.log(`  ${dodgeBlue('search')}${dim('      Procura sessões reais a partir de memória livre do usuário')}`);
   console.log(`  ${dodgeBlue('capture')}${dim('     Inspeciona eventos de uma sessão do Codex sem nova execução')}`);
   console.log(`  ${dodgeBlue('codex')}${dim('       Encaminha args para o binário original do Codex')}`);
   console.log(`  ${dodgeBlue('open')}${dim('        Abre o Codex interativo no terminal atual')}\n`);
 
-  console.log('execução com logs locais:');
-  console.log(`  ${dodgeBlue('exec')}${dim('        Executa um comando arbitrário com log em ./sessions')}`);
-  console.log(`  ${dodgeBlue('flow')}${dim('        Executa o pipeline run/quick com log em ./sessions')}\n`);
+  console.log('execução auxiliar:');
+  console.log(`  ${dodgeBlue('exec')}${dim('        Executa um comando arbitrário e grava logs em ./logs/runs')}`);
+  console.log(`  ${dodgeBlue('flow')}${dim('        Executa o pipeline run/quick e grava logs em ./logs/runs')}\n`);
 
-  console.log('observabilidade local:');
-  console.log(`  ${dodgeBlue('watch')}${dim('       Acompanha um log local no terminal atual')}`);
-  console.log(`  ${dodgeBlue('open-watch')}${dim('  Abre uma janela de watch separada para um log local')}`);
-  console.log(`  ${dodgeBlue('popup')}${dim('       Abre o watch em popup do tmux')}`);
-  console.log(`  ${dodgeBlue('tmux')}${dim('        Sobe a UI tmux com watch opcional')}\n`);
+  console.log('monitoramento do Codex real:');
+  console.log(`  ${dodgeBlue('watch')}${dim('       Acompanha uma sessão real do Codex no terminal atual')}`);
+  console.log(`  ${dodgeBlue('open-watch')}${dim('  Abre uma janela de watch para uma sessão real do Codex')}`);
+  console.log(`  ${dodgeBlue('popup')}${dim('       Abre o watch de uma sessão real em popup do tmux')}`);
+  console.log(`  ${dodgeBlue('tmux')}${dim('        Sobe a UI tmux com watch opcional da sessão real')}\n`);
 
   console.log('configuração:');
   console.log(`  ${dodgeBlue('repo')}${dim('        Lista, adiciona e seleciona repositórios')}`);
@@ -119,19 +180,27 @@ function usage(): void {
 
   console.log('opções globais:');
   console.log(`  --repo <nome|path>${dim('   Resolve o repositório padrão ou explícito')}`);
-  console.log(`  --session <valor>${dim('   Sessão Codex para `codex/open`; id de log para `exec/flow/watch`')}`);
+  console.log(`  --session <valor>${dim('   Sessão real do Codex para `codex/open/watch/open-watch/popup/tmux`')}`);
   console.log(`  -h, --help${dim('          Mostra ajuda')}\n`);
 
   console.log('exemplos:');
   console.log(`  ${dodgeBlue('codex-live session ls --theme dockermt --limit 10')}`);
+  console.log(`  ${dodgeBlue('codex-live search "dockermt no dockerhub há uns 3 dias"')}`);
+  console.log(`  ${dodgeBlue('codex-live search --to-codex "estávamos procurando o dockermt nas imagens locais e no dockerhub"')}`);
   console.log(`  ${dodgeBlue('codex-live session use 1')}`);
   console.log(`  ${dodgeBlue('codex-live open')}`);
   console.log(`  ${dodgeBlue('codex-live capture 1 --focus --behind')}`);
   console.log(`  ${dodgeBlue('codex-live exec -- git status')}`);
   console.log(`  ${dodgeBlue('codex-live flow quick :Q150 --probe')}`);
-  console.log(`  ${dodgeBlue('codex-live watch current')}`);
-  console.log(`  ${dodgeBlue('codex-live open-watch current')}`);
+  console.log(`  ${dodgeBlue('codex-live watch last')}`);
+  console.log(`  ${dodgeBlue('codex-live open-watch 1')}`);
   console.log(`\n${dim('Use `codex-live <command> --help` para ajuda específica.')}`);
+}
+
+function searchLogsRoot(): string {
+  const override = (process.env.CODEX_LIVE_SEARCH_LOGS_ROOT ?? '').trim();
+  if (override) return path.resolve(override);
+  return path.join(BASE_DIR, 'logs', 'search');
 }
 
 function parseOpts(args: string[]): { opts: ParsedOpts; rest: string[] } {
@@ -186,20 +255,6 @@ function syncTmuxConfCopy(): void {
   fs.copyFileSync(LOCAL_TMUX_CONF, HOME_TMUX_CONF);
 }
 
-function resolveLogSession(opts: ParsedOpts): string {
-  if (opts.session) {
-    if (/^\d+$/.test(opts.session)) {
-      return resolveSessionId(BASE_DIR, { sessionNumber: opts.session });
-    }
-    return opts.session;
-  }
-
-  if (opts.sessionId || opts.sessionNumber) {
-    return resolveSessionId(BASE_DIR, { sessionId: opts.sessionId, sessionNumber: opts.sessionNumber });
-  }
-  return 'current';
-}
-
 function resolveCodexSessionNumber(value: string): string {
   const rows = sessionCatalogEntries();
   const idx = Number(value);
@@ -241,6 +296,24 @@ function resolveCodexSessionWithConfig(cfg: LiveConfig, opts: ParsedOpts): strin
   if (opts.sessionId) return resolveCodexSessionValue(opts.sessionId);
   if (opts.sessionNumber) return resolveCodexSessionNumber(opts.sessionNumber);
   return resolveConfiguredCodexSession(cfg.defaultSession);
+}
+
+function resolveCodexWatchTarget(cfg: LiveConfig, opts: ParsedOpts, rawTarget?: string): string {
+  const raw = (rawTarget ?? opts.sessionId ?? opts.sessionNumber ?? opts.session ?? cfg.defaultSession ?? '').trim();
+  if (!raw || raw === 'current') {
+    const configured = resolveConfiguredCodexSession(cfg.defaultSession);
+    return configured === 'current' ? 'last' : configured;
+  }
+  if (raw === 'last') return 'last';
+  if (fs.existsSync(raw) && fs.statSync(raw).isFile()) return raw;
+  if (/^\d+$/.test(raw)) return resolveCodexSessionNumber(raw);
+  return findCodexSessionId(raw) ?? raw;
+}
+
+function ensureNoSessionSelector(action: 'exec' | 'flow' | 'search', opts: ParsedOpts): void {
+  if (opts.session || opts.sessionId || opts.sessionNumber) {
+    throw new Error(`\`--session\`, \`--session-id\` e \`--session-number\` não são válidos em \`${action}\`; eles apontam para sessões reais do Codex`);
+  }
 }
 
 function parsePsStartedToMs(started: string): number {
@@ -555,6 +628,469 @@ function csvEscape(value: string): string {
     return `"${s.replace(/"/g, '""')}"`;
   }
   return s;
+}
+
+function readFileTailLines(filePath: string, lines: number): string[] {
+  if (commandExists('tail')) {
+    const res = execCapture('tail', ['-n', String(lines), filePath], {
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    if (res.code === 0) {
+      return normalizeLineBreaks(res.stdout).split('\n').filter((x) => x.trim().length > 0);
+    }
+  }
+
+  const content = fs.readFileSync(filePath, 'utf8');
+  const allLines = normalizeLineBreaks(content).split('\n').filter((x) => x.trim().length > 0);
+  return allLines.slice(Math.max(0, allLines.length - lines));
+}
+
+const SEARCH_STOPWORDS = new Set([
+  'a', 'o', 'as', 'os', 'ao', 'aos', 'aqui', 'ali', 'agora', 'ainda', 'alguem', 'algum', 'alguma',
+  'alguns', 'algumas', 'ate', 'até', 'com', 'como', 'contra', 'da', 'das', 'de', 'dela', 'dele',
+  'deles', 'delas', 'depois', 'do', 'dos', 'e', 'em', 'entre', 'era', 'esse', 'essa', 'esses',
+  'essas', 'esta', 'está', 'estao', 'estão', 'estava', 'eu', 'foi', 'ha', 'há', 'isso', 'isto',
+  'ja', 'já', 'la', 'lá', 'mais', 'mas', 'me', 'mesmo', 'meu', 'minha', 'muito', 'na', 'nas',
+  'nao', 'não', 'nem', 'no', 'nos', 'nós', 'num', 'numa', 'o', 'onde', 'ou', 'para', 'pela',
+  'pelas', 'pelo', 'pelos', 'por', 'pra', 'que', 'se', 'sem', 'ser', 'seu', 'sua', 'só', 'sobre',
+  'tem', 'tenho', 'teve', 'tipo', 'um', 'uma', 'uns', 'umas', 'vai', 'vamos', 'voce', 'você',
+  'dia', 'dias', 'hora', 'horas', 'semana', 'semanas', 'mes', 'meses', 'month', 'months',
+  'we', 'i', 'you', 'he', 'she', 'it', 'they', 'them', 'the', 'and', 'or', 'a', 'an', 'to', 'of',
+  'for', 'in', 'on', 'at', 'with', 'from', 'about', 'into', 'over', 'after', 'before', 'was',
+  'were', 'be', 'been', 'being', 'my', 'your', 'our', 'their'
+]);
+
+function normalizeSearchText(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function includesNormalized(haystack: string, needle: string): boolean {
+  if (!needle.trim()) return false;
+  return normalizeSearchText(haystack).includes(normalizeSearchText(needle));
+}
+
+function extractSearchTerms(memory: string): SearchTerm[] {
+  const raw = memory.trim();
+  if (!raw) return [];
+
+  const found = new Map<string, SearchTerm>();
+  const push = (value: string, kind: 'phrase' | 'token') => {
+    const clean = normalizeSearchText(value).trim();
+    if (!clean || clean.length < 2) return;
+    if (kind === 'token' && (clean.length < 3 || SEARCH_STOPWORDS.has(clean))) return;
+    if (!found.has(clean) || kind === 'phrase') {
+      found.set(clean, { value: clean, kind });
+    }
+  };
+
+  for (const match of raw.matchAll(/"([^"]+)"|'([^']+)'/g)) {
+    push(match[1] || match[2] || '', 'phrase');
+  }
+
+  const tokenMatches = raw.match(/[\p{L}\p{N}_-]+/gu) ?? [];
+  for (const token of tokenMatches) push(token, 'token');
+
+  if (found.size === 0) push(raw, 'phrase');
+
+  return [...found.values()]
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'phrase' ? -1 : 1;
+      return b.value.length - a.value.length;
+    })
+    .slice(0, 12);
+}
+
+function inferSearchFromMemory(memory: string): number | null {
+  const normalized = normalizeSearchText(memory);
+  const hasRelativeTimeHint = /(ha|ultim|atras|no maximo|maximo|maxima|recent|recente)/.test(normalized);
+  if (!hasRelativeTimeHint) return null;
+  const m = normalized.match(/(\d+)\s*(hora|horas|h|dia|dias|d|semana|semanas|w|mes|meses|month|months)/);
+  if (!m) return null;
+  const amount = Number(m[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const unit = m[2];
+  if (unit === 'h' || unit === 'hora' || unit === 'horas') return Date.now() - amount * 3600 * 1000;
+  if (unit === 'd' || unit === 'dia' || unit === 'dias') return Date.now() - amount * 86400 * 1000;
+  if (unit === 'w' || unit === 'semana' || unit === 'semanas') return Date.now() - amount * 7 * 86400 * 1000;
+  return Date.now() - amount * 30 * 86400 * 1000;
+}
+
+function deepSearchFileHitsForTerms(terms: SearchTerm[]): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  if (!commandExists('rg')) return out;
+
+  for (const term of terms) {
+    if (term.value.length < 3) continue;
+    const matches = deepSearchMatchesForTerm(term.value);
+    if (matches.codexFiles.size > 0) {
+      out.set(term.value, matches.codexFiles);
+    }
+  }
+
+  return out;
+}
+
+function recordSnippetFromJsonLine(rawLine: string): string {
+  const parsed = parseJsonLine(rawLine);
+  if (!parsed || typeof parsed !== 'object' || parsed === null) return shortText(rawLine, 220);
+  const obj = parsed as Record<string, unknown>;
+  const type = String(obj.type ?? '');
+  if (type === 'event_msg') {
+    const payload = obj.payload as Record<string, unknown> | undefined;
+    const ptype = String(payload?.type ?? '');
+    if (ptype === 'user_message' || ptype === 'agent_message') {
+      return `${ptype}: ${shortText(String(payload?.message ?? ''), 220)}`;
+    }
+    if (ptype === 'agent_reasoning') {
+      return `agent_reasoning: ${shortText(String(payload?.text ?? ''), 220)}`;
+    }
+  }
+  if (type === 'response_item') {
+    const payload = obj.payload as Record<string, unknown> | undefined;
+    const ptype = String(payload?.type ?? '');
+    if (ptype === 'message') {
+      const role = String(payload?.role ?? 'unknown');
+      return `${role}: ${shortText(readMessageText(payload?.content), 220)}`;
+    }
+    if (ptype === 'function_call') {
+      return `tool_call ${String(payload?.name ?? '')}: ${previewValue(payload?.arguments, 180)}`;
+    }
+  }
+  return shortText(rawLine, 220);
+}
+
+function readContentEvidence(filePath: string, term: string): SearchEvidence | null {
+  if (!commandExists('rg')) return null;
+  const res = execCapture(
+    'rg',
+    ['-n', '-i', '-F', '-m', '12', term, filePath],
+    { stdio: ['ignore', 'pipe', 'ignore'] }
+  );
+  if (res.code !== 0) return null;
+  const lines = res.stdout.split('\n').map((x) => x.trim()).filter(Boolean);
+  let fallback: SearchEvidence | null = null;
+  for (const line of lines) {
+    const m = line.match(/^(.*?):(\d+):(.*)$/);
+    const raw = m ? m[3] : line;
+    const snippet = recordSnippetFromJsonLine(raw);
+    const lowered = normalizeSearchText(snippet);
+    const evidence = { term, source: 'content' as const, snippet };
+    if (!fallback) fallback = evidence;
+    if (
+      lowered.startsWith('user:') ||
+      lowered.startsWith('assistant:') ||
+      lowered.startsWith('user_message:') ||
+      lowered.startsWith('agent_message:')
+    ) {
+      return evidence;
+    }
+  }
+  return fallback;
+}
+
+function repoMatchesFilter(row: SessionListEntry, repoDir: string | null): boolean {
+  if (!repoDir) return true;
+  if (!row.repoDir) return false;
+  const resolvedRepo = path.resolve(repoDir);
+  const resolvedRow = path.resolve(row.repoDir);
+  return resolvedRow === resolvedRepo || resolvedRow.startsWith(`${resolvedRepo}${path.sep}`);
+}
+
+function buildSearchCandidates(query: SearchQueryOptions): { terms: SearchTerm[]; candidates: SearchCandidate[] } {
+  const terms = extractSearchTerms(query.memory);
+  const fileHits = deepSearchFileHitsForTerms(terms);
+  let rows = sessionCatalogEntries().filter((row) => repoMatchesFilter(row, query.repoDir));
+
+  if (query.fromMs !== null) rows = rows.filter((row) => row.startedAtMs >= query.fromMs!);
+  if (query.toMs !== null) rows = rows.filter((row) => row.startedAtMs <= query.toMs!);
+
+  const nowMs = Date.now();
+  const candidates = rows
+    .map((row): SearchCandidate => {
+      const resolvedPath = path.resolve(row.dirPath);
+      const evidences: SearchEvidence[] = [];
+      const matchedTerms = new Set<string>();
+      let score = 0;
+
+      for (const term of terms) {
+        let matched = false;
+        if (includesNormalized(row.textIndex, term.value)) {
+          matched = true;
+          score += term.kind === 'phrase' ? 28 : 8;
+          matchedTerms.add(term.value);
+          evidences.push({
+            term: term.value,
+            source: 'theme',
+            snippet: `tema: ${row.theme}`
+          });
+        }
+        const termFiles = fileHits.get(term.value);
+        if (termFiles?.has(resolvedPath)) {
+          matched = true;
+          score += term.kind === 'phrase' ? 22 : 6;
+          matchedTerms.add(term.value);
+        }
+        if (!matched && includesNormalized(row.repoDir, term.value)) {
+          score += 3;
+          matchedTerms.add(term.value);
+        }
+      }
+
+      if (query.inferredFromMs !== null) {
+        if (row.startedAtMs >= query.inferredFromMs) score += 10;
+        else score -= 2;
+      }
+
+      const ageDays = Math.max(0, (nowMs - row.startedAtMs) / (86400 * 1000));
+      score += Math.max(0, 6 - ageDays * 0.35);
+
+      return {
+        row,
+        score,
+        matchedTerms: [...matchedTerms],
+        evidences
+      };
+    })
+    .sort((a, b) => b.score - a.score || compareNewestSessions(a.row, b.row));
+
+  const filtered = candidates.filter((candidate) => candidate.score > 0);
+  const top = (filtered.length > 0 ? filtered : candidates).slice(0, query.candidateLimit);
+
+  for (const candidate of top) {
+    for (const term of candidate.matchedTerms) {
+      if (candidate.evidences.some((e) => e.term === term && e.source === 'content')) continue;
+      const contentEvidence = readContentEvidence(candidate.row.dirPath, term);
+      if (contentEvidence) candidate.evidences.push(contentEvidence);
+    }
+    candidate.evidences.splice(4);
+  }
+
+  return {
+    terms,
+    candidates: top.slice(0, query.limit)
+  };
+}
+
+function parseSearchQueryOptions(args: string[], cfg: LiveConfig, opts: ParsedOpts): SearchQueryOptions {
+  ensureNoSessionSelector('search', opts);
+
+  let toCodex = false;
+  let jsonOut = false;
+  let limit = 5;
+  let candidateLimit = 8;
+  let fromMs: number | null = null;
+  let toMs: number | null = null;
+  const memoryParts: string[] = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '--to-codex') {
+      toCodex = true;
+      continue;
+    }
+    if (a === '--json') {
+      jsonOut = true;
+      continue;
+    }
+    if (a === '--limit') {
+      const n = Number(args[i + 1] ?? '');
+      if (!Number.isFinite(n) || n < 1) throw new Error(`--limit inválido: ${args[i + 1] ?? ''}`);
+      limit = Math.floor(n);
+      i += 1;
+      continue;
+    }
+    if (a === '--candidate-limit') {
+      const n = Number(args[i + 1] ?? '');
+      if (!Number.isFinite(n) || n < 1) throw new Error(`--candidate-limit inválido: ${args[i + 1] ?? ''}`);
+      candidateLimit = Math.max(limit, Math.floor(n));
+      i += 1;
+      continue;
+    }
+    if (a === '--from') {
+      fromMs = parseDateInputToMs(String(args[i + 1] ?? ''));
+      i += 1;
+      continue;
+    }
+    if (a === '--to') {
+      toMs = parseDateInputToMs(String(args[i + 1] ?? ''));
+      i += 1;
+      continue;
+    }
+    if (a === '--since') {
+      fromMs = Date.now() - parseDurationToMs(String(args[i + 1] ?? ''));
+      i += 1;
+      continue;
+    }
+    if (a === '--hours') {
+      const n = Number(args[i + 1] ?? '');
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`--hours inválido: ${args[i + 1] ?? ''}`);
+      fromMs = Date.now() - n * 3600 * 1000;
+      i += 1;
+      continue;
+    }
+    if (a === '--days') {
+      const n = Number(args[i + 1] ?? '');
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`--days inválido: ${args[i + 1] ?? ''}`);
+      fromMs = Date.now() - n * 86400 * 1000;
+      i += 1;
+      continue;
+    }
+    if (a === '--weeks') {
+      const n = Number(args[i + 1] ?? '');
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`--weeks inválido: ${args[i + 1] ?? ''}`);
+      fromMs = Date.now() - n * 7 * 86400 * 1000;
+      i += 1;
+      continue;
+    }
+    if (a === '--months') {
+      const n = Number(args[i + 1] ?? '');
+      if (!Number.isFinite(n) || n <= 0) throw new Error(`--months inválido: ${args[i + 1] ?? ''}`);
+      fromMs = Date.now() - n * 30 * 86400 * 1000;
+      i += 1;
+      continue;
+    }
+    memoryParts.push(a);
+  }
+
+  const memory = memoryParts.join(' ').trim();
+  if (!memory) throw new Error('uso: codex-live search [--to-codex] [--json] [--limit N] "memória do assunto"');
+  if (fromMs !== null && toMs !== null && fromMs > toMs) {
+    throw new Error('--from não pode ser maior que --to');
+  }
+
+  const repoDir = opts.repo ? resolveRepo(BASE_DIR, cfg, opts.repo) : null;
+
+  return {
+    memory,
+    toCodex,
+    jsonOut,
+    limit,
+    candidateLimit,
+    fromMs,
+    toMs,
+    inferredFromMs: fromMs === null ? inferSearchFromMemory(memory) : null,
+    repoDir
+  };
+}
+
+function buildSearchJsonCandidates(candidates: SearchCandidate[]) {
+  return candidates.map((candidate, idx) => ({
+    rank: idx + 1,
+    score: Number(candidate.score.toFixed(2)),
+    id: candidate.row.id,
+    started_at: candidate.row.startedIso || null,
+    repo_dir: candidate.row.repoDir || null,
+    repo_name: candidate.row.repoDir ? path.basename(candidate.row.repoDir) : null,
+    theme: candidate.row.theme,
+    dir_path: candidate.row.dirPath,
+    matched_terms: candidate.matchedTerms,
+    evidence: candidate.evidences
+  }));
+}
+
+function codexSearchSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: [
+      'best_session_id',
+      'confidence',
+      'rationale',
+      'alternate_session_ids',
+      'suggested_capture_target',
+      'terms_used'
+    ],
+    properties: {
+      best_session_id: { type: ['string', 'null'] },
+      confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+      rationale: { type: 'string' },
+      alternate_session_ids: {
+        type: 'array',
+        items: { type: 'string' }
+      },
+      suggested_capture_target: { type: ['string', 'null'] },
+      terms_used: {
+        type: 'array',
+        items: { type: 'string' }
+      }
+    }
+  };
+}
+
+function buildCodexSearchPrompt(memory: string, query: SearchQueryOptions, terms: SearchTerm[], candidates: SearchCandidate[]): string {
+  const candidatePayload = buildSearchJsonCandidates(candidates);
+  return [
+    CODEX_SEARCH_PROTOCOL,
+    '',
+    `User memory: ${memory}`,
+    `Explicit repo filter: ${query.repoDir || '(none)'}`,
+    `Explicit from: ${query.fromMs !== null ? new Date(query.fromMs).toISOString() : '(none)'}`,
+    `Explicit to: ${query.toMs !== null ? new Date(query.toMs).toISOString() : '(none)'}`,
+    `Inferred recent-from hint: ${query.inferredFromMs !== null ? new Date(query.inferredFromMs).toISOString() : '(none)'}`,
+    `Extracted terms: ${terms.map((term) => `${term.kind}:${term.value}`).join(', ') || '(none)'}`,
+    '',
+    'Candidates JSON:',
+    JSON.stringify(candidatePayload, null, 2)
+  ].join('\n');
+}
+
+function runCodexSearchDecision(memory: string, query: SearchQueryOptions, terms: SearchTerm[], candidates: SearchCandidate[]): CodexSearchDecision {
+  if (!commandExists('codex')) throw new Error('comando `codex` não encontrado no PATH');
+
+  const searchDir = searchLogsRoot();
+  ensureDir(searchDir);
+  const token = `${nowCompactUtc()}__${Math.floor(Math.random() * 1_000_000)}`;
+  const schemaPath = path.join(searchDir, `codex-search-schema-${token}.json`);
+  const outputPath = path.join(searchDir, `codex-search-output-${token}.json`);
+  const prompt = buildCodexSearchPrompt(memory, query, terms, candidates);
+
+  fs.writeFileSync(schemaPath, `${JSON.stringify(codexSearchSchema(), null, 2)}\n`, 'utf8');
+
+  const res = execCaptureInput(
+    'codex',
+    [
+      'exec',
+      '--ephemeral',
+      '--skip-git-repo-check',
+      '--color',
+      'never',
+      '-s',
+      'read-only',
+      '-C',
+      BASE_DIR,
+      '--output-schema',
+      schemaPath,
+      '--output-last-message',
+      outputPath,
+      '-'
+    ],
+    prompt,
+    { stdio: ['pipe', 'pipe', 'pipe'] }
+  );
+
+  if (res.code !== 0) {
+    throw new Error(`falha ao consultar o Codex para reranqueamento: ${shortText(res.stderr || res.stdout, 220)}`);
+  }
+
+  if (!fs.existsSync(outputPath)) {
+    throw new Error('falha ao consultar o Codex para reranqueamento: nenhuma saída estruturada foi gerada');
+  }
+
+  const raw = fs.readFileSync(outputPath, 'utf8').trim();
+  if (!raw) {
+    throw new Error('falha ao consultar o Codex para reranqueamento: saída estruturada vazia');
+  }
+
+  let parsed: CodexSearchDecision;
+  try {
+    parsed = JSON.parse(raw) as CodexSearchDecision;
+  } catch {
+    throw new Error(`falha ao consultar o Codex para reranqueamento: JSON inválido em ${outputPath}`);
+  }
+  return parsed;
 }
 
 function sessionRowsToCsv(rows: SessionJsonRow[]): string {
@@ -1032,9 +1568,7 @@ async function cmdSpy(args: string[]): Promise<number> {
   console.log(paintStage('Capture do Codex:'));
   console.log(`  session=${paintFile(chosen.id || '(sem-id)')} file=${paintFile(chosen.path)} modified=${paintDim(when)}`);
 
-  const content = fs.readFileSync(chosen.path, 'utf8');
-  const allLines = normalizeLineBreaks(content).split('\n').filter((x) => x.trim().length > 0);
-  const initial = allLines.slice(Math.max(0, allLines.length - lines));
+  const initial = readFileTailLines(chosen.path, lines);
   for (const line of initial) {
     const parsed = parseJsonLine(line);
     if (focus && (!parsed || typeof parsed !== 'object' || parsed === null || !isFocusEvent(parsed as Record<string, unknown>))) continue;
@@ -1164,7 +1698,7 @@ async function cmdSession(subArgs: string[]): Promise<number> {
     console.log('ações:');
     console.log('  ls [filtros]            lista sessões do Codex');
     console.log('  export|csv [filtros] [--out arquivo.csv] [--stdout]  exporta CSV');
-    console.log('  active [--age auto|s|m|h] [--min-age <dur>]  watch local + processos codex ativos');
+    console.log('  active [--age auto|s|m|h] [--min-age <dur>]  janelas watch + processos codex ativos');
     console.log('  attach <n|session_id> [--prompt "texto"]      entra na sessão codex ativa');
     console.log('  show|current            mostra sessão Codex padrão');
     console.log('  use <id|número|current> define sessão Codex padrão');
@@ -1281,7 +1815,7 @@ async function cmdSession(subArgs: string[]): Promise<number> {
     console.log(stage('Janelas watch ativas:'));
     if (active.length === 0) {
       console.log('  (nenhuma janela watch ativa)');
-      console.log(dim('dica: use `codex-live watch current` no terminal atual ou `codex-live open-watch current` em nova janela.'));
+      console.log(dim('dica: use `codex-live watch last` no terminal atual ou `codex-live open-watch 1` em nova janela.'));
     } else {
       const grouped = new Map<string, typeof active>();
       for (const row of active) {
@@ -1404,27 +1938,25 @@ async function cmdSession(subArgs: string[]): Promise<number> {
 async function cmdExec(args: string[]): Promise<number> {
   const { opts, rest } = parseOpts(args);
   if (opts.help) {
-    console.log('uso: codex-live exec [--repo <nome|path>] [--session <id|número do log>] -- <comando> [args]');
-    console.log(`destino do log: ${file('./sessions/<id>/')}`);
-    console.log('obs: `--session` aqui seleciona o id do log local, não uma sessão do Codex.');
+    console.log('uso: codex-live exec [--repo <nome|path>] -- <comando> [args]');
+    console.log(`destino do log: ${file('./logs/runs/<id>/')}`);
+    console.log('obs: `exec` não cria sessão Codex; grava apenas logs auxiliares locais.');
     console.log('exemplos:');
     console.log('  codex-live exec -- git status');
     console.log('  codex-live exec --repo operpdf -- npm test');
-    console.log('  codex-live exec --session current -- bash -lc "echo ok"');
+    console.log('  codex-live exec -- bash -lc "echo ok"');
     return 0;
   }
   if (rest.length === 0) throw new Error('faltou comando após exec');
+  ensureNoSessionSelector('exec', opts);
 
   const cfg = loadConfig(BASE_DIR);
   const repo = resolveRepo(BASE_DIR, cfg, opts.repo);
-  const sessionId = resolveLogSession(opts);
 
-  const callArgs: string[] = [];
-  if (sessionId && sessionId !== 'current') callArgs.push('--session', sessionId);
-  callArgs.push('--repo', repo, '--', ...rest);
+  const callArgs: string[] = ['--repo', repo, '--', ...rest];
 
   console.log(stage('Execução:'));
-  console.log(`  repo=${file(repo)} log=${file(sessionId)} cmd=${dim(rest.join(' '))}`);
+  console.log(`  repo=${file(repo)} log_dir=${file('./logs/runs/<id>/')} cmd=${dim(rest.join(' '))}`);
   return runInternal('codex-live-run.js', callArgs);
 }
 
@@ -1435,19 +1967,19 @@ async function cmdFlow(args: string[]): Promise<number> {
     console.log('uso:');
     console.log('  codex-live flow run [range] [model] [input] [--probe] [--param <arg>]...');
     console.log('  codex-live flow quick [input] [--probe] [--param <arg>]...');
-    console.log(`destino do log: ${file('./sessions/<id>/')}`);
-    console.log('obs: `--session` aqui seleciona o id do log local reutilizado pelo wrapper.');
+    console.log(`destino do log: ${file('./logs/runs/<id>/')}`);
+    console.log('obs: `flow` não cria sessão Codex; grava apenas logs auxiliares locais.');
     console.log('exemplos:');
     console.log('  codex-live flow run');
     console.log('  codex-live flow run 1-10 @M-DESP :Q22 --probe');
     console.log('  codex-live flow quick :Q150 --probe');
-    console.log('  codex-live flow quick --session current :Q22');
+    console.log('  codex-live flow quick :Q22');
     return 0;
   }
+  ensureNoSessionSelector('flow', opts);
 
   const cfg = loadConfig(BASE_DIR);
   const repo = resolveRepo(BASE_DIR, cfg, opts.repo);
-  const sessionId = resolveLogSession(opts);
 
   const positional = rest.slice(1);
 
@@ -1471,12 +2003,10 @@ async function cmdFlow(args: string[]): Promise<number> {
   if (opts.probe) cmdLine.push('--probe');
   cmdLine.push(...opts.params);
 
-  const callArgs: string[] = [];
-  if (sessionId && sessionId !== 'current') callArgs.push('--session', sessionId);
-  callArgs.push('--repo', repo, '--', ...cmdLine);
+  const callArgs: string[] = ['--repo', repo, '--', ...cmdLine];
 
   console.log(stage('Flow preparado:'));
-  console.log(`  mode=${action} repo=${file(repo)} log=${file(sessionId)} range=${range} model=${model} input=${input} probe=${opts.probe ? 'true' : 'false'}`);
+  console.log(`  mode=${action} repo=${file(repo)} log_dir=${file('./logs/runs/<id>/')} range=${range} model=${model} input=${input} probe=${opts.probe ? 'true' : 'false'}`);
   return runInternal('codex-live-run.js', callArgs);
 }
 
@@ -1487,40 +2017,35 @@ async function cmdMonitor(action: 'watch' | 'open' | 'popup' | 'tmux', args: str
   const tailArgs = hasPositionalSession ? rest.slice(1) : rest;
 
   const cfg = loadConfig(BASE_DIR);
-  const resolvedOpts = { ...opts };
-  if (sessionArg && !resolvedOpts.session && !resolvedOpts.sessionId && !resolvedOpts.sessionNumber) {
-    if (/^\d+$/.test(sessionArg)) resolvedOpts.sessionNumber = sessionArg;
-    else resolvedOpts.session = sessionArg;
-  }
-  const sessionId = resolveLogSession(resolvedOpts);
+  const watchTarget = resolveCodexWatchTarget(cfg, opts, sessionArg);
 
   const publicAction = action === 'open' ? 'open-watch' : action;
 
   if (opts.help) {
     if (action === 'tmux') {
-      console.log('uso: codex-live tmux [current|<id>|<número>] [--width 70%] [--height 55%] [--watch popup|split|both|window|none] [--no-attach] [--log]');
-      console.log(`fonte: ${file('./sessions')}`);
-      console.log('obs: `<id>` e `<número>` aqui apontam para logs locais do wrapper.');
+      console.log('uso: codex-live tmux [last|<id>|<número>|<arquivo.jsonl>] [--width 70%] [--height 55%] [--watch popup|split|both|window|none] [--no-attach] [--log] [--tmux-session <nome>]');
+      console.log(`fonte: ${file('~/.codex/sessions')}`);
+      console.log('obs: o alvo do watch é sempre uma sessão real do Codex.');
       console.log('exemplos:');
       console.log('  codex-live tmux');
       console.log('  codex-live tmux --repo operpdf --watch popup');
-      console.log('  codex-live tmux current --watch split');
+      console.log('  codex-live tmux 1 --watch split');
     } else {
-      console.log(`uso: codex-live ${publicAction} [current|<id>|<número>]${action === 'popup' ? ' [--width 70%] [--height 55%]' : ''}`);
-      console.log(`fonte: ${file('./sessions')}`);
-      console.log('obs: `<id>` e `<número>` aqui apontam para logs locais do wrapper.');
+      console.log(`uso: codex-live ${publicAction} [last|<n>|<session_id>|<arquivo.jsonl>]${action === 'popup' ? ' [--width 70%] [--height 55%]' : ''}`);
+      console.log(`fonte: ${file('~/.codex/sessions')}`);
+      console.log('obs: o alvo é sempre uma sessão real do Codex.');
       console.log('exemplos:');
       if (action === 'watch') {
         console.log('  codex-live watch');
-        console.log('  codex-live watch current');
+        console.log('  codex-live watch last');
         console.log('  codex-live watch 1');
       } else if (action === 'open') {
         console.log('  codex-live open-watch');
-        console.log('  codex-live open-watch current');
+        console.log('  codex-live open-watch last');
         console.log('  codex-live open-watch 1');
       } else {
         console.log('  codex-live popup');
-        console.log('  codex-live popup current --width 70% --height 55%');
+        console.log('  codex-live popup last --width 70% --height 55%');
         console.log('  codex-live popup 1');
       }
     }
@@ -1530,14 +2055,12 @@ async function cmdMonitor(action: 'watch' | 'open' | 'popup' | 'tmux', args: str
   if (action === 'tmux') {
     syncTmuxConfCopy();
     const repo = resolveRepo(BASE_DIR, cfg, opts.repo);
-    const callArgs: string[] = [];
-    const tmuxSession = sessionId === 'current' ? 'codex_live' : sessionId;
-    callArgs.push('--session', tmuxSession, '--repo', repo);
+    const callArgs: string[] = ['--watch-target', watchTarget, '--repo', repo];
     if (opts.width) callArgs.push('--width', opts.width);
     if (opts.height) callArgs.push('--height', opts.height);
     // Forward advanced tmux flags (ex: --no-attach, --no-popup, --log, --log-dir, --log-file)
     callArgs.push(...tailArgs);
-    console.log(stage('UI tmux:'), `log=${file(sessionId)} tmux_session=${file(tmuxSession)} repo=${file(repo)}`);
+    console.log(stage('UI tmux:'), `watch_target=${file(watchTarget)} repo=${file(repo)}`);
     return runInternal('codex-tmux.js', callArgs);
   }
 
@@ -1549,14 +2072,94 @@ async function cmdMonitor(action: 'watch' | 'open' | 'popup' | 'tmux', args: str
 
   const script = map[action];
 
-  const callArgs = [sessionId];
+  const callArgs = [watchTarget];
   if (action === 'popup') {
     if (opts.width) callArgs.push('--width', opts.width);
     if (opts.height) callArgs.push('--height', opts.height);
   }
 
-  console.log(stage(`${publicAction.toUpperCase()}:`), `log=${file(sessionId)}`);
+  console.log(stage(`${publicAction.toUpperCase()}:`), `session=${file(watchTarget)}`);
   return runInternal(script, callArgs);
+}
+
+async function cmdSearch(args: string[]): Promise<number> {
+  const { opts, rest } = parseOpts(args);
+  const cfg = loadConfig(BASE_DIR);
+
+  if (opts.help || rest[0] === 'help') {
+    console.log('uso: codex-live search [--to-codex] [--json] [--limit N] [--candidate-limit N] [--days N|--hours N|--weeks N|--months N|--from DATA|--to DATA] "memória do assunto"');
+    console.log(`fonte: ${file('~/.codex/sessions')}`);
+    console.log('obs: a busca local coleta candidatas no histórico real do Codex e `--to-codex` pede ao próprio Codex para reranquear essas candidatas.');
+    console.log('exemplos:');
+    console.log('  codex-live search "dockermt no dockerhub"');
+    console.log('  codex-live search --days 3 "dockermt nas imagens locais"');
+    console.log('  codex-live search --to-codex "estávamos procurando o dockermt há uns 3 dias no dockerhub"');
+    console.log('  codex-live search --repo operpdf --json "certidao conselho reconciliar com despacho"');
+    return 0;
+  }
+
+  const query = parseSearchQueryOptions(rest, cfg, opts);
+  const { terms, candidates } = buildSearchCandidates(query);
+  const jsonCandidates = buildSearchJsonCandidates(candidates);
+
+  let codexDecision: CodexSearchDecision | null = null;
+  if (query.toCodex) {
+    codexDecision = runCodexSearchDecision(query.memory, query, terms, candidates);
+  }
+
+  if (query.jsonOut) {
+    console.log(JSON.stringify({
+      memory: query.memory,
+      repo_dir_filter: query.repoDir,
+      inferred_from: query.inferredFromMs !== null ? new Date(query.inferredFromMs).toISOString() : null,
+      explicit_from: query.fromMs !== null ? new Date(query.fromMs).toISOString() : null,
+      explicit_to: query.toMs !== null ? new Date(query.toMs).toISOString() : null,
+      terms: terms,
+      count: jsonCandidates.length,
+      candidates: jsonCandidates,
+      codex: codexDecision
+    }, null, 2));
+    return 0;
+  }
+
+  console.log(stage('Busca por memória:'));
+  console.log(`  memória=${dim(query.memory)}`);
+  if (query.repoDir) console.log(`  repo_filter=${file(query.repoDir)}`);
+  if (terms.length > 0) console.log(`  termos=${dim(terms.map((term) => term.value).join(', '))}`);
+  if (query.inferredFromMs !== null) {
+    console.log(`  tempo_inferido_desde=${dim(new Date(query.inferredFromMs).toISOString())}`);
+  }
+
+  if (candidates.length === 0) {
+    console.log('  (nenhuma candidata)');
+  } else {
+    for (let i = 0; i < candidates.length; i += 1) {
+      const candidate = candidates[i];
+      const when = candidate.row.startedIso ? candidate.row.startedIso.replace('T', ' ').replace('Z', ' UTC') : 'n/a';
+      const repoName = candidate.row.repoDir ? path.basename(candidate.row.repoDir) : '-';
+      console.log(`  ${dim(String(i + 1).padStart(2, ' '))}  ${file(candidate.row.id)} ${dim(`[score=${candidate.score.toFixed(1)}] [${when}] [repo=${repoName}]`)}`);
+      console.log(`      ${dim('tema:')} ${candidate.row.theme}`);
+      if (candidate.matchedTerms.length > 0) console.log(`      ${dim('match:')} ${candidate.matchedTerms.join(', ')}`);
+      for (const evidence of candidate.evidences.slice(0, 2)) {
+        console.log(`      ${dim(`${evidence.source}:`)} ${evidence.snippet}`);
+      }
+    }
+  }
+
+  if (codexDecision) {
+    console.log('');
+    console.log(stage('Reranqueado pelo Codex:'));
+    console.log(`  melhor=${file(codexDecision.best_session_id || '(nenhuma)')} confidence=${codexDecision.confidence}`);
+    console.log(`  motivo=${codexDecision.rationale}`);
+    if (codexDecision.alternate_session_ids.length > 0) {
+      console.log(`  alternativos=${codexDecision.alternate_session_ids.join(', ')}`);
+    }
+    if (codexDecision.suggested_capture_target) {
+      console.log(`  capture=${dim(`codex-live capture ${codexDecision.suggested_capture_target} --focus --behind`)}`);
+    }
+  }
+
+  return 0;
 }
 
 async function cmdCodex(args: string[]): Promise<number> {
@@ -1651,6 +2254,7 @@ async function main(): Promise<number> {
         }
         return await cmdSession(['ls', ...args]);
       }
+      case 'search': return await cmdSearch(args);
       case 'exec': return await cmdExec(args);
       case 'start': return await cmdStart(args);
       case 'open': return await cmdStart(args);

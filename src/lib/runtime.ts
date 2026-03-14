@@ -24,21 +24,6 @@ export function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-export function updateCurrentSymlink(baseDir: string, sessionDir: string): void {
-  const currentLink = path.join(baseDir, 'sessions', 'current');
-  try {
-    const st = fs.lstatSync(currentLink);
-    if (st.isSymbolicLink() || st.isFile()) {
-      fs.unlinkSync(currentLink);
-    } else {
-      fs.rmSync(currentLink, { recursive: true, force: true });
-    }
-  } catch {
-    // ignore
-  }
-  fs.symlinkSync(sessionDir, currentLink);
-}
-
 export function shellQuote(arg: string): string {
   if (/^[A-Za-z0-9_\-./:@]+$/.test(arg)) return arg;
   return `'${arg.replace(/'/g, `'\\''`)}'`;

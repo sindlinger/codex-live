@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { baseDirFromImportMeta, ensureDir, nowCompactUtc, nowIso, shellQuote, updateCurrentSymlink } from './lib/runtime.js';
+import { baseDirFromImportMeta, ensureDir, nowCompactUtc, nowIso, shellQuote } from './lib/runtime.js';
 import { commandExists, execCapture } from './lib/proc.js';
 
 type Status = 'ok' | 'warn' | 'fail';
@@ -17,7 +17,8 @@ interface EventRow {
 }
 
 interface Options {
-  session: string;
+  tmuxSession: string;
+  watchTarget: string;
   repo: string;
   watchMode: WatchMode;
   doAttach: boolean;
@@ -36,7 +37,7 @@ const RUN_ID = `${nowCompactUtc()}__${process.pid}`;
 function usage(): void {
   console.log(
     `Uso:
-  codex-tmux [--session <nome>] [--repo <path>] [--watch <popup|split|both|window|none>] [--no-popup] [--no-attach]
+  codex-tmux [--tmux-session <nome>] [--watch-target <last|id|n>] [--repo <path>] [--watch <popup|split|both|window|none>] [--no-popup] [--no-attach]
              [--popup-width <70%>] [--popup-height <55%>]
              [--log] [--log-dir <path>] [--log-file <path>]
 
@@ -51,7 +52,8 @@ Logs:
 
 function parseArgs(argv: string[]): Options {
   const out: Options = {
-    session: process.env.CODEX_TMUX_SESSION || 'codex_live',
+    tmuxSession: process.env.CODEX_TMUX_SESSION || 'codex_live',
+    watchTarget: process.env.CODEX_WATCH_TARGET || 'last',
     repo: process.env.CODEX_REPO_DIR || '/mnt/c/git/operpdf-textopsalign',
     watchMode: 'popup',
     doAttach: true,
@@ -65,10 +67,16 @@ function parseArgs(argv: string[]): Options {
   const args = [...argv];
   while (args.length > 0) {
     const a = args.shift() as string;
-    if (a === '--session') {
+    if (a === '--tmux-session') {
       const v = args.shift();
-      if (!v) throw new Error('--session exige valor');
-      out.session = v;
+      if (!v) throw new Error('--tmux-session exige valor');
+      out.tmuxSession = v;
+      continue;
+    }
+    if (a === '--watch-target') {
+      const v = args.shift();
+      if (!v) throw new Error('--watch-target exige valor');
+      out.watchTarget = v;
       continue;
     }
     if (a === '--repo') {
@@ -186,7 +194,8 @@ class JsonLogger {
       exit_code: exitCode,
       args: this.args,
       config: {
-        session_name: options.session,
+        tmux_session: options.tmuxSession,
+        watch_target: options.watchTarget,
         repo_dir: options.repo,
         watch_mode: options.watchMode,
         auto_popup: options.watchMode === 'popup' || options.watchMode === 'both',
@@ -388,7 +397,7 @@ function main(): number {
     'parse',
     'ok',
     'parsed',
-    `session=${options.session};repo=${options.repo};watch_mode=${options.watchMode};` +
+    `tmux_session=${options.tmuxSession};watch_target=${options.watchTarget};repo=${options.repo};watch_mode=${options.watchMode};` +
       `do_attach=${options.doAttach};size=${options.popupWidth}x${options.popupHeight};log=${options.logEnabled}`
   );
 
@@ -400,21 +409,13 @@ function main(): number {
     }
     logger.log('preflight', 'ok', 'validated');
 
-    const watchSessionDir = path.join(BASE_DIR, 'sessions', `tmux__${options.session}`);
-    ensureDir(watchSessionDir);
-    fs.closeSync(fs.openSync(path.join(watchSessionDir, 'commands.log'), 'a'));
-    fs.closeSync(fs.openSync(path.join(watchSessionDir, 'output.log'), 'a'));
-    fs.closeSync(fs.openSync(path.join(watchSessionDir, 'events.jsonl'), 'a'));
-    updateCurrentSymlink(BASE_DIR, watchSessionDir);
-    logger.log('watch_logs', 'ok', 'session_dir_ready', `dir=${watchSessionDir}`);
-
     const watchAudit = logger.getWatchAuditFile();
-    const watchProgram = `${shellQuote(process.execPath)} ${shellQuote(path.join(BASE_DIR, 'dist', 'codex-live-watch.js'))} current`;
+    const watchProgram = `${shellQuote(process.execPath)} ${shellQuote(path.join(BASE_DIR, 'dist', 'codex-live-watch.js'))} ${shellQuote(options.watchTarget)}`;
     const watchCmd = options.logEnabled
       ? `cd ${shellQuote(BASE_DIR)} && CODEX_WATCH_AUDIT_FILE=${shellQuote(watchAudit)} ${watchProgram}`
       : `cd ${shellQuote(BASE_DIR)} && ${watchProgram}`;
 
-    const hasSession = tmux(['has-session', '-t', options.session]).code === 0;
+    const hasSession = tmux(['has-session', '-t', options.tmuxSession]).code === 0;
     if (!hasSession) {
       const hasCodex = commandExists('codex');
       const startCmd = hasCodex
@@ -422,70 +423,62 @@ function main(): number {
         : `bash -lc ${shellQuote(`cd ${shellQuote(options.repo)} && echo "codex não encontrado no PATH"; exec bash`)}`;
       logger.log('session', hasCodex ? 'ok' : 'warn', 'start_cmd_selected', hasCodex ? 'cmd=codex' : 'cmd=fallback_bash');
 
-      const created = spawnSync('tmux', ['new-session', '-d', '-s', options.session, '-c', options.repo, startCmd], { stdio: 'ignore' });
-      if ((created.status ?? 1) !== 0) throw new Error(`falha ao criar sessão tmux: ${options.session}`);
-      spawnSync('tmux', ['set-option', '-t', options.session, '-gq', 'status', 'on'], { stdio: 'ignore' });
-      spawnSync('tmux', ['set-option', '-t', options.session, '-gq', 'mouse', 'on'], { stdio: 'ignore' });
-      logger.log('session', 'ok', 'created', `session=${options.session}`);
+      const created = spawnSync('tmux', ['new-session', '-d', '-s', options.tmuxSession, '-c', options.repo, startCmd], { stdio: 'ignore' });
+      if ((created.status ?? 1) !== 0) throw new Error(`falha ao criar sessão tmux: ${options.tmuxSession}`);
+      spawnSync('tmux', ['set-option', '-t', options.tmuxSession, '-gq', 'status', 'on'], { stdio: 'ignore' });
+      spawnSync('tmux', ['set-option', '-t', options.tmuxSession, '-gq', 'mouse', 'on'], { stdio: 'ignore' });
+      logger.log('session', 'ok', 'created', `tmux_session=${options.tmuxSession}`);
     } else {
-      logger.log('session', 'ok', 'reused', `session=${options.session}`);
+      logger.log('session', 'ok', 'reused', `tmux_session=${options.tmuxSession}`);
     }
 
-    spawnSync('tmux', ['set-option', '-t', options.session, '-q', '@codex_watch_cmd', watchCmd], { stdio: 'ignore' });
-    logger.log('session', 'ok', 'watch_cmd_set', `watch_audit_file=${watchAudit}`);
+    spawnSync('tmux', ['set-option', '-t', options.tmuxSession, '-q', '@codex_watch_cmd', watchCmd], { stdio: 'ignore' });
+    logger.log('session', 'ok', 'watch_cmd_set', `watch_target=${options.watchTarget};watch_audit_file=${watchAudit}`);
 
-    const panes = tmux(['list-panes', '-t', options.session, '-F', '#{pane_id}']);
+    const panes = tmux(['list-panes', '-t', options.tmuxSession, '-F', '#{pane_id}']);
     const mainPaneId = panes.out.split(/\r?\n/).find((x) => x.trim().length > 0) ?? '';
-    if (mainPaneId) {
-      const outputLog = path.join(watchSessionDir, 'output.log');
-      const pipeCmd = `cat >> ${shellQuote(outputLog)}`;
-      spawnSync('tmux', ['pipe-pane', '-o', '-t', mainPaneId, pipeCmd], { stdio: 'ignore' });
-      logger.log('watch_logs', 'ok', 'pipe_pane_enabled', `pane=${mainPaneId};output_log=${outputLog}`);
-    } else {
-      logger.log('watch_logs', 'warn', 'pipe_pane_skipped', 'reason=main_pane_not_found');
-    }
 
     const popupEnabled = options.watchMode === 'popup' || options.watchMode === 'both';
     const splitEnabled = options.watchMode === 'split' || options.watchMode === 'both';
     const windowEnabled = options.watchMode === 'window';
     if (splitEnabled) {
-      ensureWatchSplit(options.session, mainPaneId, watchCmd, logger);
+      ensureWatchSplit(options.tmuxSession, mainPaneId, watchCmd, logger);
     } else {
-      clearWatchSplit(options.session, logger);
+      clearWatchSplit(options.tmuxSession, logger);
     }
     if (windowEnabled) {
-      ensureWatchWindow(options.session, watchCmd, logger);
+      ensureWatchWindow(options.tmuxSession, watchCmd, logger);
     } else {
-      clearWatchWindow(options.session, logger);
+      clearWatchWindow(options.tmuxSession, logger);
     }
 
     if (options.doAttach) {
       if (popupEnabled) {
-        const hookCmd = buildPopupHookCommand(options.session, options.popupWidth, options.popupHeight, watchCmd);
-        setHook(options.session, 'client-attached', hookCmd);
-        setHook(options.session, 'client-resized');
+        const hookCmd = buildPopupHookCommand(options.tmuxSession, options.popupWidth, options.popupHeight, watchCmd);
+        setHook(options.tmuxSession, 'client-attached', hookCmd);
+        setHook(options.tmuxSession, 'client-resized');
         logger.log('popup', 'ok', 'hook_set_external_attach_only', `size=${options.popupWidth}x${options.popupHeight};mode=${options.watchMode}`);
-        spawnPopupOnAttach(options.session, options.popupWidth, options.popupHeight, watchCmd, logger);
+        spawnPopupOnAttach(options.tmuxSession, options.popupWidth, options.popupHeight, watchCmd, logger);
       } else {
-        setHook(options.session, 'client-attached');
-        setHook(options.session, 'client-resized');
+        setHook(options.tmuxSession, 'client-attached');
+        setHook(options.tmuxSession, 'client-resized');
         logger.log('popup', 'ok', 'disabled', `mode=${options.watchMode}`);
       }
 
-      if (!launchAttachInNewTerminal(options.session, logger)) {
+      if (!launchAttachInNewTerminal(options.tmuxSession, logger)) {
         exitCode = 1;
         return exitCode;
       }
-      console.log(`Attach aberto em outro terminal para a sessão: ${options.session}`);
+      console.log(`Attach aberto em outro terminal para a sessão tmux: ${options.tmuxSession}`);
       exitCode = 0;
       return exitCode;
     }
 
-    console.log(`Sessão pronta: ${options.session}`);
+    console.log(`Sessão tmux pronta: ${options.tmuxSession}`);
     if (popupEnabled) {
-      const hookCmd = buildPopupHookCommand(options.session, options.popupWidth, options.popupHeight, watchCmd);
-      setHook(options.session, 'client-attached', hookCmd);
-      setHook(options.session, 'client-resized');
+      const hookCmd = buildPopupHookCommand(options.tmuxSession, options.popupWidth, options.popupHeight, watchCmd);
+      setHook(options.tmuxSession, 'client-attached', hookCmd);
+      setHook(options.tmuxSession, 'client-resized');
       console.log(`Popup no attach: ${options.popupWidth} x ${options.popupHeight}`);
       logger.log('popup', 'ok', 'hook_set_no_attach_only', `size=${options.popupWidth}x${options.popupHeight};mode=${options.watchMode}`);
     }
@@ -495,8 +488,9 @@ function main(): number {
     if (windowEnabled) {
       console.log('Janela de watch: habilitada');
     }
-    console.log(`Anexar: tmux attach -t ${options.session}`);
-    logger.log('attach', 'ok', 'skipped_by_flag', `session=${options.session}`);
+    console.log(`Watch alvo do Codex: ${options.watchTarget}`);
+    console.log(`Anexar: tmux attach -t ${options.tmuxSession}`);
+    logger.log('attach', 'ok', 'skipped_by_flag', `tmux_session=${options.tmuxSession}`);
     exitCode = 0;
     return exitCode;
   } catch (err) {

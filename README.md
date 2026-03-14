@@ -22,8 +22,9 @@ Somente este comando é público em `bin/`:
 
 ### Modelo
 
-- `session`, `sessions` e `capture` leem o histórico real do Codex em `~/.codex/sessions`.
-- `exec`, `flow`, `watch`, `open-watch`, `popup` e `tmux` usam logs locais em `./sessions`.
+- `session`, `sessions`, `capture`, `watch`, `open-watch`, `popup` e `tmux` leem o histórico real do Codex em `~/.codex/sessions`.
+- `search` faz busca por memória livre nesse mesmo histórico real e pode pedir reranqueamento ao próprio Codex.
+- `exec` e `flow` só gravam logs auxiliares em `./logs/runs`.
 - `open` é o alias interativo de `codex-live codex`.
 
 ### Repositórios
@@ -48,7 +49,7 @@ codex-live session attach 1
 ```
 
 `session ls` busca somente no histórico real do Codex em `~/.codex/sessions`.
-Os diretórios locais em `./sessions/` são apenas logs operacionais do wrapper e não entram na busca.
+Os logs auxiliares em `./logs/runs/` não entram na busca de sessões.
 
 ### Capture do histórico do Codex
 ```bash
@@ -57,6 +58,16 @@ codex-live capture 1 --focus
 codex-live capture last --follow
 codex-live capture 019cac6b-2dc1-78e1-a39b-e0b40970cb0a --behind
 ```
+
+### Busca por memória livre
+```bash
+codex-live search "dockermt no dockerhub"
+codex-live search --days 3 "dockermt nas imagens locais"
+codex-live search --to-codex "estávamos procurando o dockermt há uns 3 dias no dockerhub"
+codex-live search --json "certidao conselho reconciliar com despacho"
+```
+
+`search --to-codex` primeiro levanta candidatas em `~/.codex/sessions` e só depois pede ao Codex para reranquear essas candidatas com um protocolo fixo de investigação.
 
 ### Fluxo principal (`run.exe`)
 ```bash
@@ -74,7 +85,7 @@ codex-live flow quick :Q22 --probe
 ```bash
 codex-live exec -- git status
 codex-live exec --repo operpdf -- npm test
-codex-live exec --session current -- bash -lc "echo ok"
+codex-live exec -- bash -lc "echo ok"
 ```
 
 ### Codex original via codex-live
@@ -88,18 +99,18 @@ codex-live codex -- --model gpt-5
 ### Monitoramento (watch/open-watch/popup/tmux)
 ```bash
 codex-live watch
-codex-live watch current
-codex-live open-watch current
-codex-live popup current --width 70% --height 55%
+codex-live watch last
+codex-live open-watch 1
+codex-live popup last --width 70% --height 55%
 codex-live tmux --watch popup
-codex-live tmux current --watch split
+codex-live tmux 1 --watch split
 codex-live tmux --watch both
 codex-live tmux --watch window
 ```
 
 Notas:
 - `codex-live open` inicia o Codex interativo no terminal atual.
-- `codex-live open-watch` abre uma nova janela de watch para um log local em `./sessions`.
+- `codex-live open-watch` abre uma nova janela de watch para uma sessão real do Codex.
 - `popup` e `tmux` requerem cliente tmux ativo para abrir popup/janela.
 - Se não houver cliente tmux ativo, o comando falha com instrução manual.
 
@@ -108,9 +119,15 @@ Notas:
 - `src/`: TypeScript
 - `dist/`: compilado
 - `bin/`: entrada pública (`codex-live`)
-- `sessions/`: logs locais de execução/watch
 - `logs/`: relatórios JSON
+- `logs/runs/`: logs auxiliares de `exec` e `flow`
+- `logs/search/`: artefatos efêmeros do `search --to-codex`
+- `docs/codex-sessions.md`: estrutura observada do histórico real em `~/.codex/sessions`
 - `lixeira/`: wrappers removidos
+
+## Estrutura do histórico real
+
+- [docs/codex-sessions.md](/home/chanfle/codex-live/docs/codex-sessions.md): layout, tipos de registro, campos úteis para busca e anomalias observadas em `~/.codex/sessions`
 
 ## Desenvolvimento
 

@@ -17,22 +17,6 @@ export function nowCompactUtc() {
 export function ensureDir(dir) {
     fs.mkdirSync(dir, { recursive: true });
 }
-export function updateCurrentSymlink(baseDir, sessionDir) {
-    const currentLink = path.join(baseDir, 'sessions', 'current');
-    try {
-        const st = fs.lstatSync(currentLink);
-        if (st.isSymbolicLink() || st.isFile()) {
-            fs.unlinkSync(currentLink);
-        }
-        else {
-            fs.rmSync(currentLink, { recursive: true, force: true });
-        }
-    }
-    catch {
-        // ignore
-    }
-    fs.symlinkSync(sessionDir, currentLink);
-}
 export function shellQuote(arg) {
     if (/^[A-Za-z0-9_\-./:@]+$/.test(arg))
         return arg;

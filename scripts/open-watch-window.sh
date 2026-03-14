@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SESSION_ID="${1:-current}"
+TARGET="${1:-last}"
 LAUNCHER="${2:-powershell}"
 OWNER_PID="${3:-0}"
 OWNER_TTY="${4:-(unknown)}"
@@ -27,4 +27,4 @@ export CODEX_WATCH_OPEN_PID="${OWNER_PID}"
 export CODEX_WATCH_OPEN_TTY="${OWNER_TTY}"
 export CODEX_WATCH_OWNER_CMD="${OWNER_CMD}"
 
-exec "${NODE_BIN}" "${WATCH_JS}" "${SESSION_ID}"
+exec "${NODE_BIN}" "${WATCH_JS}" "${TARGET}"
